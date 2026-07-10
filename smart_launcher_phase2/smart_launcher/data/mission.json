@@ -1,0 +1,31 @@
+{
+  "mission_name": "mangrove_plot_A",
+  "min_gps_fix_duration_s": 10,
+  "position_source": "GNSS",
+  "modules": {
+    "A": {
+      "servo_open_pwm_us": 1700,
+      "servo_stop_pwm_us": 1650,
+      "travel_ms": 350,
+      "door_count": 5
+    },
+    "B": {
+      "servo_open_pwm_us": 1300,
+      "servo_stop_pwm_us": 1500,
+      "travel_ms": 350,
+      "door_count": 5
+    }
+  },
+  "drops": [
+    { "id": 1, "lat_deg": 9.345678, "lon_deg": -79.876543, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 2, "lat_deg": 9.345700, "lon_deg": -79.876520, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 3, "lat_deg": 9.345722, "lon_deg": -79.876497, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 4, "lat_deg": 9.345744, "lon_deg": -79.876474, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 5, "lat_deg": 9.345766, "lon_deg": -79.876451, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 6, "lat_deg": 9.345788, "lon_deg": -79.876428, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 7, "lat_deg": 9.345810, "lon_deg": -79.876405, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 8, "lat_deg": 9.345832, "lon_deg": -79.876382, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 9, "lat_deg": 9.345854, "lon_deg": -79.876359, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 10,"lat_deg": 9.345876, "lon_deg": -79.876336, "alt_m": 8.0, "radius_m": 3.0 }
+  ]
+}
