@@ -13,7 +13,8 @@ void ActuatorModule::begin() {
     // Configure limit switch pin with internal pull-up
     pinMode(_limit_pin, INPUT_PULLUP);
 
-    // Configure LEDC for 50 Hz servo PWM
+    // Configure LEDC for 50 Hz servo PWM — classic channel-based API
+    // (see header comment for why, vs. the calibrator's newer API)
     ledcSetup(_ledc_channel, LEDC_FREQ_HZ, LEDC_RESOLUTION);
     ledcAttachPin(_servo_pin, _ledc_channel);
 

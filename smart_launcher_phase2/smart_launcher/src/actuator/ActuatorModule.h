@@ -20,6 +20,17 @@ public:
     // stop_pwm_us  : PWM to stop servo
     // travel_ms    : time to travel exactly one door width (35mm)
     // door_count   : total doors this module has
+    //
+    // NOTE: uses the classic channel-based LEDC API (ledcSetup +
+    // ledcAttachPin + ledcWrite(channel,...)), NOT the newer pin-addressed
+    // ledcAttach()/ledcWrite(pin,...) used in the calibrator .ino sketches.
+    // PlatformIO's official espressif32 platform (v6.10.0, the version this
+    // project resolves to) bundles an Arduino-ESP32 core that predates the
+    // newer API. Both APIs drive the same underlying LEDC hardware with
+    // identical 50Hz/16-bit PWM math -- this is a wrapper-function version
+    // difference, not a behavior difference. If the project later moves to
+    // the "pioarduino" platform fork (tracks newer cores faster), this can
+    // be re-ported to match the calibrator's API.
     ActuatorModule(uint8_t servo_pin, uint8_t limit_pin,
                    uint8_t ledc_channel,
                    uint16_t open_pwm_us, uint16_t stop_pwm_us,

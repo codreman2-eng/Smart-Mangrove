@@ -1,15 +1,20 @@
 /**
  * Smart Launcher — Main entry point
- * ESP32-S3 DevKitC-1 N8R8
+ * Freenove ESP32-WROVER
  * ArduCopter/ArduPilot + DJI M600 compatible
  *
  * Pin assignments (defined in platformio.ini build_flags):
  *   PIN_GNSS_RX=4   PIN_GNSS_TX=5
  *   PIN_MAVLINK_RX=16  PIN_MAVLINK_TX=17
- *   PIN_SERVO_A=18  PIN_SERVO_B=8
- *   PIN_LIMIT_A=9   PIN_LIMIT_B=10
+ *   PIN_SERVO_A=12  PIN_SERVO_B=13
+ *   PIN_LIMIT_A=32  PIN_LIMIT_B=33
  *   PIN_ARM_BUTTON=0
- *   PIN_STATUS_LED=48
+ *   PIN_STATUS_LED=22   (plain LED, not WS2812 — see StateMachine.cpp)
+ *
+ * NEVER use GPIO 2 (strapping pin, boot-loops if driven OUTPUT) or
+ * GPIO 9/10 (permanently reserved for flash+PSRAM on WROVER modules,
+ * cannot be regular GPIO in any flash mode). See PROJECT_HANDOFF.md for
+ * the full bisection history that found both of these on real hardware.
  */
 
 #include <Arduino.h>
@@ -78,6 +83,12 @@ void handleSerial() {
         modA.reset(); modB.reset();
         Serial.println("[CMD] Modules reset");
     }
+    else if (cmd == "stop") {
+        // Emergency stop — immediately re-writes each module's calibrated
+        // stop PWM. Does NOT touch door counters or arm state.
+        modA.stop(); modB.stop();
+        Serial.println("[CMD] STOP — both servos commanded to stop PWM");
+    }
     else if (cmd == "dropa")  {
         // Manual bench test — fire module A once
         DropResult r = modA.dropNext();
@@ -90,7 +101,7 @@ void handleSerial() {
                       r == DropResult::OK ? "OK" : "TIMEOUT/FAIL");
     }
     else if (cmd == "help") {
-        Serial.println("Commands: arm | disarm | status | log | reset | dropa | dropb");
+        Serial.println("Commands: arm | disarm | status | log | reset | stop | dropa | dropb");
     }
     else {
         Serial.printf("[CMD] Unknown: '%s' — type 'help'\n", cmd.c_str());
@@ -98,12 +109,17 @@ void handleSerial() {
 }
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
+// Numbered checkpoints on purpose: on this exact board (WROVER-E) two
+// separate boot-loop bugs (GPIO 2 strapping pin, GPIO 9/10 reserved for
+// flash+PSRAM) were only diagnosable by seeing exactly which checkpoint
+// printed last before a silent reset. Keep this pattern for any future
+// hardware bring-up on this board — see PROJECT_HANDOFF.md.
 void setup() {
     Serial.begin(115200);
-    delay(500);
+    delay(1000);   // matches the timing validated during WROVER-E bring-up
     Serial.println("\n=== Smart Launcher booting ===");
 
-    // 1. Config
+    Serial.println("[1] Config");
     if (!cfg.begin()) {
         Serial.println("[MAIN] Config load FAILED — check /mission.json on LittleFS");
         sm.setFault("No config");
@@ -111,18 +127,18 @@ void setup() {
     }
     cfg.printSummary();
 
-    // 2. Logger
+    Serial.println("[2] Logger");
     logger.begin();
 
-    // 3. State machine
+    Serial.println("[3] State machine (LED GPIO22, ARM button GPIO0)");
     sm.begin();
 
-    // 4. Position source
+    Serial.println("[4] Position source (GNSS)");
     // Select based on config (MAVLink path added in Phase 4)
     posSource = &gnssSource;
     posSource->begin();
 
-    // 5. Actuators — update PWM/timing from loaded config
+    Serial.println("[5] Actuators (servo GPIO12/13, limit GPIO32/33)");
     const MissionConfig& mc = cfg.config();
     modA = ActuatorModule(PIN_SERVO_A, PIN_LIMIT_A, 0,
                           mc.module_a.servo_open_pwm_us,
@@ -137,14 +153,17 @@ void setup() {
     modA.begin();
     modB.begin();
 
-    // 6. Drop logic engine
+    Serial.println("[6] Drop logic engine");
     engine = new DropLogicEngine(cfg, *posSource, modA, modB, sm, logger);
 
-    // 7. Transition BOOT → IDLE
-    sm.requestDisarm();   // triggers IDLE state
+    Serial.println("[7] BOOT -> IDLE");
+    sm.completeBoot();   // one-time BOOT->IDLE transition (NOT requestDisarm —
+                          // that's guarded to only fire from ARMED and would
+                          // silently no-op here, leaving the system stuck in BOOT)
     Serial.println("[MAIN] Boot complete — IDLE");
     Serial.println("[MAIN] Type 'help' for bench test commands");
     Serial.println("[MAIN] Hold ARM button 2s to ARM");
+    Serial.println("[8] setup() complete — loop starting");
 }
 
 // ─── Loop ────────────────────────────────────────────────────────────────────

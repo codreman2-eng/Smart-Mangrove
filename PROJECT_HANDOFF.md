@@ -255,6 +255,290 @@ determines whether a single global travel_ms is usable as-is, needs a
 one-time "first door" exception, or needs the mechanism itself inspected
 for binding/backlash.
 
+### Phase 2 firmware ported to WROVER-E (build-verified, NOT yet flashed)
+
+Ported `smart_launcher_phase2/smart_launcher/` from its original ESP32-S3
+target to the real WROVER-E hardware this project actually uses:
+
+- `platformio.ini`: board changed to `freenove_esp32_wrover` (matches the
+  actual physical board — confirmed by cross-referencing the "Freenove
+  ESP32-WROVER" label already in several bench-test sketch headers).
+  Removed the two ESP32-S3-only USB-CDC build flags (native USB doesn't
+  apply to classic ESP32, which uses a CH340 UART bridge). Removed
+  FastLED from lib_deps (see below). Pins in build_flags updated to the
+  validated WROVER-E values: servos 12/13, limits 32/33, LED 22.
+- `StateMachine.h/.cpp`: removed FastLED/WS2812 entirely — the real
+  hardware has a plain 2-pin LED (confirmed with user), not an
+  addressable RGB LED. States are now distinguished by blink cadence
+  (BOOT=solid, IDLE=slow blink, ARMED=steady 2Hz, DROPPING=rapid,
+  FAULT=slow 50% on/off) instead of colour. Same non-blocking
+  millis()-based approach as before.
+- `main.cpp`: pin header comment updated; added numbered boot checkpoint
+  prints through setup() (the exact debugging pattern that caught both
+  the GPIO 2 and GPIO 9/10 bugs on this board this session) — worth
+  keeping for any future first-flash-after-changes on this hardware.
+- `ActuatorModule.h/.cpp`: **attempted** to port to the same
+  ledcAttach()/ledcWrite(pin,...) API used in the calibrator, but this
+  project builds with PlatformIO's official `espressif32` platform
+  (v6.10.0 as resolved on this machine), which bundles an Arduino-ESP32
+  core that predates that API (compile error: "ledcAttach was not
+  declared"). Reverted to the classic ledcSetup()+ledcAttachPin()+
+  ledcWrite(channel,...) API instead — same underlying LEDC hardware and
+  PWM math, just an older wrapper. **This means the calibrator (.ino,
+  built via Arduino IDE's bundled arduino-cli, core 3.3.8) and the main
+  firmware (PlatformIO, older core) are on two different Arduino-ESP32
+  core versions on this machine.** Not a functional problem for LEDC
+  itself, but worth knowing if other core-version-dependent behavior
+  differences show up later. If full parity is ever wanted, the
+  community "pioarduino" platform fork tracks newer cores faster than
+  PlatformIO's official registry entry.
+
+**Build verified clean** via `pio run` (PlatformIO CLI at
+`~/.platformio/penv/Scripts/pio.exe`, not on PATH by default on this
+machine): 0 warnings, 0 errors. RAM 6.9% (22524/327680 bytes), Flash
+11.3% (355957/3145728 bytes).
+
+**NOT flashed to hardware yet** — deliberately held off because:
+1. Flashing would overwrite the calibrator currently on the physical board.
+2. `mission.json` module A `travel_ms` was stale (350) — updated to the
+   confirmed working value (**580**).
+3. `mission.json` module A `servo_open_pwm_us` is STILL STALE (1700) —
+   this predates the stop-value fix (1650) and the direction-reversal
+   fix. Need to read the exact "OPEN=" value the web calibrator currently
+   shows for Module A (with whatever Offset value is actually set — not
+   necessarily the default 200) and write that in before this firmware
+   should be trusted to drive the real servo. Do NOT guess this number.
+
+**Next step:** get the confirmed Module A OPEN pwm value from the
+calibrator UI, update `mission.json`, then flash + test via the serial
+bench commands (`arm`, `dropa`, `status`, `log`) — same live-hardware
+verification discipline used for the calibrator all session.
+
+### Phase 2 firmware: flashed, two more real bugs caught and fixed
+
+Got Module A's confirmed OPEN value (1450) from the calibrator UI,
+updated `mission.json` (`open=1450 stop=1650 travel=580ms`), flashed both
+firmware and filesystem to the board (COM6) via `pio run --target upload`
+/ `--target uploadfs`. Two previously-latent bugs surfaced immediately
+because this was the first time this firmware had ever actually been
+flashed and driven over serial:
+
+1. **Partition name mismatch.** `partitions_custom.csv` named the
+   filesystem partition `littlefs`, but Arduino-ESP32's
+   `LittleFS.begin()` defaults to looking for a partition literally named
+   `spiffs`. Result: `LittleFS mount FAILED` on first boot, config never
+   loaded. Fixed by renaming the partition table entry to `spiffs`
+   (SubType was already `spiffs`, just the Name column was wrong).
+   Pre-existing in the original ESP32-S3 version of this firmware too —
+   never caught because it was never flashed before this session.
+
+2. **Boot could never leave the BOOT state.** `setup()` called
+   `sm.requestDisarm()` to trigger the BOOT->IDLE transition, but
+   `requestDisarm()` is guarded to only fire from `ARMED` (it's meant for
+   the normal disarm-during-flight path). Called from `BOOT`, it silently
+   no-ops. Result: `status` always reported `State=0` (BOOT) forever, and
+   `arm` also silently no-op'd (its guard requires `IDLE`). The system
+   was permanently stuck. Fixed by adding a dedicated
+   `StateMachine::completeBoot()` method (BOOT->IDLE, one-time, called
+   once at the end of setup() instead of the mismatched requestDisarm()
+   call). Also pre-existing in the original firmware — same story, never
+   actually run before.
+
+**Confirmed working after both fixes** (live serial, via `status`/`arm`):
+```
+status -> State=1 (IDLE), Armed=0
+arm    -> [SM] >>> ARMED <<<
+status -> State=2 (ARMED), Armed=1
+```
+
+**Deliberately stopped before `dropa`** — that's the first command that
+actually moves the real servo/rack (retracts door 1, one-way). Board is
+currently sitting ARMED, LED blinking 2Hz on GPIO22, waiting for a live
+`dropa` test with the user watching.
+
+### `dropa` test result: found a real servo-runaway incident, root-caused, led to Phase 3
+
+Live `dropa` ran cleanly through the firmware ("timed drop OK, 580ms"), but
+the servo did NOT stop — kept slowly, continuously rotating even after a
+full reboot re-wrote the same stop command (1650us) fresh during
+`ActuatorModule::begin()`. **User had to physically cut servo power.**
+Traced the application code line by line (config load -> constructor ->
+every `_writePWM(_stop_pwm_us)` call site) and confirmed it was sending
+exactly the right number, with duty-cycle math numerically identical to
+the calibrator's. Re-measured Module A's true stop via the calibrator
+afterward: **1670us, not 1650**.
+
+Conclusion: the same requested (50Hz, 16-bit, duty) LEDC config produces
+different real servo behavior depending on which Arduino-ESP32 core
+generates it — PlatformIO's official `espressif32` platform (v6.10.0)
+bundles an older core (pre-3.x, no `ledcAttach(pin,...)` at all, forced
+the classic channel API) with a different underlying LEDC driver (IDF v4)
+than Arduino IDE's bundled arduino-cli (core 3.3.8, IDF v5's LEDC driver).
+Not proven with certainty (two data points), but the evidence trail
+strongly favors the Arduino IDE toolchain — every calibration number
+measured through it has held up on re-verification; the PlatformIO path's
+first live drop test caused a real safety incident on its very first try.
+
+Also added, in response: a `stop` serial command (emergency stop — writes
+each module's calibrated stop PWM immediately, doesn't touch door
+counters or arm state) since none existed before this incident.
+
+---
+
+## PHASE 3: Mission Dashboard (built on the calibrator's proven toolchain, not PlatformIO)
+
+Following the incident above, decided to build the Phase 3 web dashboard
+(originally on the roadmap as "Wi-Fi config upload") by **extending the
+calibrator's Arduino-IDE codebase**, not the PlatformIO project — full
+reasoning captured in the approved plan (was written to
+`C:\Users\carli\.claude\plans\rosy-frolicking-tide.md` during this
+session's planning phase). Short version: build on the toolchain with the
+actual reliability track record, not the one that just caused a runaway
+servo.
+
+### What was built
+
+Restructured `Servo_Web_Calibrator_WROVER.ino` into its own folder
+(`Servo_Web_Calibrator_WROVER/`) with sibling files — Arduino requires the
+sketch folder name to match the `.ino` filename, and multi-file sketches
+need flat siblings (not PlatformIO-style `src/` subdirectories):
+
+- **`Pins.h`** — plain `#define`s replacing PlatformIO's `build_flags`.
+  Same validated pins throughout: servos 12/13, limits 32/33, LED 22, GNSS
+  4/5. No external ARM button exists (only onboard EN/RST and BOOT/IO0) —
+  kept the GPIO0-hold-2s ARM logic as secondary/best-effort per user
+  confirmation, dashboard ARM is primary.
+- **`ConfigManager.h/.cpp`** — ported from `smart_launcher_phase2/`, plus:
+  `reverse`/`offset_us` fields added to `ModuleConfig` (matching the
+  calibrator's UI concepts), a `save()` method (ArduinoJson serialize back
+  to `/mission.json`, used by `/savecal`), `setModuleA/B()` mutators, and
+  `begin()` now takes an optional PROGMEM default JSON to self-seed the
+  file on first boot if it doesn't exist (see `MissionDefault.h` — Arduino
+  IDE has no bundled equivalent of `pio run --target uploadfs`).
+  `computeOpenPwm()`/`computeClosePwm()`/`opensHigh()` free functions added
+  mirroring the calibrator's proven client-side JS formula exactly, so
+  server-side automatic drops (GPS-triggered, no browser involved) compute
+  the identical pulse the dashboard UI would show.
+- **`PositionSource.h`** (renamed `IPositionSource.h`) + **`GNSSPositionSource.h/.cpp`** — ported verbatim.
+- **`Logger.h/.cpp`** — ported near-verbatim, added `streamToHttp()` (chunked
+  send, same pattern as the HTML chunking, avoids loading a long flight
+  log into one `String`).
+- **`StateMachine.h/.cpp`** — ported verbatim (already plain-LED, already has
+  the `completeBoot()` fix from earlier this session). Removed the
+  calibrator's own standalone GPIO22 heartbeat-blink code from the `.ino`
+  since `StateMachine::_updateLED()` now owns that pin.
+- **`ActuatorModule.h/.cpp`** — real rewrite, not a mechanical port:
+  (1) PWM writes via `ledcAttach(pin,...)`/`ledcWrite(pin,...)`, matching
+  the calibrator's own proven `servoWrite()` — no channel parameter, unlike
+  the PlatformIO version forced onto the classic API; (2) **converted from
+  blocking to non-blocking** — `startDrop()`+`poll()` instead of a
+  `while(millis()...){delay(1);}` busy-loop, reusing the calibrator's
+  already-proven timed-run shape. This matters because this sketch's
+  `loop()` also runs `server.handleClient()` — a blocking multi-second
+  drop would freeze the live dashboard during exactly the moment you'd
+  want to watch it, the same "blocking web handlers cause watchdog
+  resets" lesson from earlier this session.
+- **`DropLogicEngine.h/.cpp`** — ported logic, restructured as a
+  `IDLE/WAITING_A/WAITING_B` phase state machine instead of one blocking
+  `_executeDrop()` call, driven by `modA.poll()`/`modB.poll()` being
+  called every `loop()` iteration *before* `engine->update()` (documented
+  in the header — order matters, the engine reacts to `isDropping()`
+  transitioning to false).
+- **`MissionDefault.h`** — PROGMEM default `mission.json` content (Module A
+  seeded with the last measured values — stop=1670, open=1470, travel=580
+  — clearly commented that these still need fresh re-verification before
+  trusting a real drop; Module B still placeholder/theoretical, never
+  calibrated).
+
+### New HTTP routes / UI
+
+Two tabs (Mission Control default, Calibration) per user preference, a
+sticky always-visible **EMERGENCY STOP** button outside both tabs (no
+confirm — friction only belongs on actions that cause motion). New routes:
+`/arm`, `/disarm`, `/dropa`, `/dropb` (both require ARMED + `confirm=1`,
+tightening the old serial commands which had no state guard at all),
+`/stop` (no confirm, idempotent), `/log` (streamed), `/clearlog`
+(confirm), `/savecal` (persists tuned calibration to `mission.json`).
+Existing `/cmd` and `/timed` (calibration) now reject with 409 while
+armed/dropping — a stale calibration click during a real mission is a
+real hazard now that both feature sets share one servo driver. Manual
+DROP A/DROP B buttons use a two-tap confirm (tap turns into "CONFIRM
+DROP A?", second tap within 5s fires it). ARM requires one confirm tap
+too; DISARM and STOP need none.
+
+### Build + flash: clean
+
+Installed `ArduinoJson`+`TinyGPSPlus` via `arduino-cli lib install`
+(previously only used in the PlatformIO project). Compiled with
+`--warnings all`: **zero warnings, zero errors**. Flash 80%
+(1,056,599/1,310,720 bytes — has headroom but worth watching if more
+features get added), RAM 14%. Flashed to COM6, forced reset, captured
+full boot log: all 12 checkpoints hit cleanly, `LittleFS mounted OK`,
+self-seed logic confirmed working (mission.json didn't exist under this
+sketch's partition layout, seeded fresh from `MissionDefault.h`, loaded
+correctly), GNSS UART started, both actuators initialized, WiFi AP up,
+HTTP server started, BOOT->IDLE transitioned correctly.
+
+### NOT yet done — needs the user physically present (real hardware motion)
+
+Per the plan's verification checklist, in order:
+1. **Recalibrate Module A's stop value fresh** on the Calibration tab —
+   do not trust 1670 (or 1650) carried forward from memory/a different
+   toolchain, even though this is now the same toolchain that produced
+   1670. Re-verify.
+2. Confirm Mission Control tab renders correctly (state, GPS status even
+   with no fix, door counters) — this needs a browser connected to the
+   `SmartLauncher` AP, which the agent cannot do (joining that network
+   would disconnect the agent's own internet access).
+3. ARM (confirm) -> verify dashboard reflects ARMED.
+4. Manual DROP A (confirm), human watching — specifically verify the new
+   non-blocking actuator code stops correctly on both travel_ms timeout
+   and (for the last door) the limit switch.
+5. Verify `/status` polling keeps responding *during* an active drop —
+   the specific defect class the non-blocking rewrite exists to prevent.
+6. Verify EMERGENCY STOP instantly halts both a running TIMED RUN and a
+   running DROP.
+7. Only after 1-6 pass: consider GPS-triggered auto-fire via
+   `DropLogicEngine` for anything beyond a bench test.
+8. Module B still has never been calibrated at all — needs
+   `Servo_Calibration_Tool_B.ino` first, then the dashboard's Calibration
+   tab for open/close/travel_ms, same as Module A went through.
+
+### Round 2 (first hands-on dashboard test): silent-failure bug found and fixed
+
+User reported two symptoms: "calibration mode doesn't work when armed"
+and "in mission planning it's random when it works despite having it
+armed." Root cause (found by reading the JS, not by reproducing — could
+not test the actual browser UI, only reasoned from code): **the dashboard
+JS never checked HTTP response status.** Every server-side guard added
+this session (`/cmd`/`/timed` reject 409 while armed/dropping, `/dropa`/
+`/dropb` reject without `confirm=1` or while not armed) was working
+exactly as designed — but the JS treated any completed fetch as success
+regardless of status code, updating the UI optimistically either way. So
+every intentional block looked like random, silent failure with zero
+indication of why.
+
+Fixed: added a `toast()` banner (visible on both tabs, unlike the event
+log which only lives on the Calibration tab) plus response-status
+checking in `doFetch()` (used by arm/disarm/drop/stop/clearlog),
+`sendPwm()` (calibration OPEN/STOP/CLOSE/slider), and `timed()`
+(calibration TIMED RUN) — all now surface the exact HTTP status + body on
+rejection instead of silently proceeding. `sendPwm()`/`timed()` also no
+longer update the UI optimistically before confirming the server actually
+accepted the command.
+
+Recompiled clean (0 warnings), reflashed, reconfirmed clean boot
+(identical 12-checkpoint sequence, config persisted correctly across the
+reflash — no partition change this time, so no re-seed).
+
+**Caveat:** this fix is based on code reading, not reproduction — I
+cannot open the dashboard in a browser myself (joining the `SmartLauncher`
+AP would disconnect this environment's own network access). It's the
+best-evidenced explanation for both symptoms, but if random-seeming
+behavior persists after this fix, the toast will now show the real HTTP
+status/reason on every blocked action, which should make root-causing
+whatever's left much faster next session.
+
 ---
 
 ## FLIGHT CONTROLLER (Cube Orange — separate from launcher)
@@ -345,23 +629,32 @@ already fully supports B (per-module Stop/Offset/Reverse fields, and
 `Servo_Calibration_Tool_B.ino` is written and ready) so no more tool work
 is needed before B can be picked up whenever the hardware exists.
 
+Phase 2 firmware has now been ported to the WROVER-E pinout/API and
+build-verified (see above) — it is NOT yet flashed, waiting on the
+Module A OPEN pwm value and the travel deviation question below.
+
 Current sequence:
-1. **Characterize the door-to-door travel deviation on Module A** (see
+1. Get the exact "OPEN=" value the web calibrator currently shows for
+   Module A and write it into `mission.json`'s
+   `modules.A.servo_open_pwm_us` (currently a stale placeholder, 1700).
+2. **Characterize the door-to-door travel deviation on Module A** (see
    KNOWN ISSUE above) — run the current 580ms setting across all 5 door
    positions in one sequence, marking/measuring each, to see whether
    door 1 is uniquely short or whether the deviation grows/accumulates.
    This determines whether a single global travel_ms is usable, needs a
    first-door exception, or points to a mechanical problem worth
    inspecting before trusting this module with real seeds.
-2. Once travel is acceptably consistent (or compensated for), run bench
+3. Flash the ported Phase 2 firmware (+ `pio run --target uploadfs` for
+   mission.json) and re-verify via the serial bench commands (`arm`,
+   `dropa`, `status`, `log`) that it matches what the calibrator showed —
+   same live-hardware-verification discipline as the rest of this session.
+4. Once travel is acceptably consistent (or compensated for), run bench
    Test 4 from `SMART_LAUNCHER_COMPLETE_GUIDE.md` for Module A alone —
    5 consecutive door drops ending in a confirmed limit-switch stop.
-3. Record Module A's final stop/offset/open/close/travel_ms into
-   `mission.json`. Leave Module B's fields as placeholders.
-4. When Module B hardware exists: `Servo_Calibration_Tool_B.ino` for its
+5. When Module B hardware exists: `Servo_Calibration_Tool_B.ino` for its
    true stop, then the same web calibrator workflow (already supports it)
    for open/close/travel_ms, then repeat the 5-door consistency check.
-5. Once both modules are calibrated: full two-module bench Test
+6. Once both modules are calibrated: full two-module bench Test
    (sequential A-then-B confirm), then move to Phase 3 in the roadmap
    below (Wi-Fi config upload, NMEA bench replay).
 

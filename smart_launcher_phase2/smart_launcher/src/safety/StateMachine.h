@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-#include <FastLED.h>
 
 enum class SystemState {
     BOOT,     // startup, self-check
@@ -8,15 +7,6 @@ enum class SystemState {
     ARMED,    // drop logic active — ready to fire
     DROPPING, // currently executing a drop
     FAULT     // unrecoverable error — servos stopped
-};
-
-// RGB LED colours per state
-static const CRGB STATE_COLOUR[] = {
-    CRGB::Blue,    // BOOT
-    CRGB::Yellow,  // IDLE
-    CRGB::Green,   // ARMED
-    CRGB::Purple,  // DROPPING
-    CRGB::Red      // FAULT
 };
 
 class StateMachine {
@@ -34,6 +24,13 @@ public:
     void setDropping(bool active);
     void setFault(const char* reason);
 
+    // One-time BOOT -> IDLE transition, called once at the end of setup().
+    // Deliberately separate from requestDisarm(), which is guarded to only
+    // fire from ARMED (its real job is the normal disarm path) and would
+    // silently no-op if called from BOOT — which is exactly the bug this
+    // method fixes (the system could never leave BOOT before this existed).
+    void completeBoot();
+
     SystemState state() const { return _state; }
     bool isArmed()    const { return _state == SystemState::ARMED; }
     bool isDropping() const { return _state == SystemState::DROPPING; }
@@ -45,9 +42,11 @@ private:
     SystemState _state        = SystemState::BOOT;
     uint32_t    _btn_press_t  = 0;
     bool        _btn_held     = false;
-    CRGB        _leds[1];
 
     void _setState(SystemState s);
+
+    // Plain 2-pin LED — states are distinguished by blink pattern, not
+    // colour (no WS2812 on this board). Called every update().
     void _updateLED();
 
     // Long press threshold for ARM/DISARM

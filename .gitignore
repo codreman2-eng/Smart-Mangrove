@@ -1,0 +1,5 @@
+# PlatformIO build artifacts
+.pio/
+
+# Arduino IDE / arduino-cli build cache (if ever generated in-repo)
+build/

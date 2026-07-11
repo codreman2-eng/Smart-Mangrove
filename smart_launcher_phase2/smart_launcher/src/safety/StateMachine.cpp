@@ -5,8 +5,8 @@ StateMachine::StateMachine(uint8_t led_pin, uint8_t arm_btn_pin)
 
 void StateMachine::begin() {
     pinMode(_btn_pin, INPUT_PULLUP);
-    FastLED.addLeds<WS2812, 48, GRB>(_leds, 1).setCorrection(TypicalLEDStrip);
-    FastLED.setBrightness(40);
+    pinMode(_led_pin, OUTPUT);
+    digitalWrite(_led_pin, LOW);
     _setState(SystemState::BOOT);
     Serial.println("[SM] State machine started — BOOT");
 }
@@ -28,12 +28,7 @@ void StateMachine::update() {
         }
     }
 
-    // --- Blink LED in ARMED state so it's visible ---
-    if (_state == SystemState::ARMED) {
-        uint32_t t = millis();
-        _leds[0] = (t % 1000 < 500) ? CRGB::Green : CRGB::Black;
-        FastLED.show();
-    }
+    _updateLED();
 }
 
 void StateMachine::requestArm() {
@@ -47,6 +42,13 @@ void StateMachine::requestDisarm() {
     if (_state == SystemState::ARMED) {
         _setState(SystemState::IDLE);
         Serial.println("[SM] Disarmed → IDLE");
+    }
+}
+
+void StateMachine::completeBoot() {
+    if (_state == SystemState::BOOT) {
+        _setState(SystemState::IDLE);
+        Serial.println("[SM] Boot complete → IDLE");
     }
 }
 
@@ -65,11 +67,21 @@ void StateMachine::setFault(const char* reason) {
 
 void StateMachine::_setState(SystemState s) {
     _state = s;
-    _updateLED();
 }
 
 void StateMachine::_updateLED() {
-    uint8_t idx = (uint8_t)_state;
-    _leds[0] = STATE_COLOUR[idx];
-    FastLED.show();
+    // No WS2812 on this board — states are distinguished by blink cadence
+    // instead of colour. Non-blocking (millis()-based), safe to call every
+    // loop() iteration alongside the drop-logic engine.
+    uint32_t t = millis();
+    bool on;
+    switch (_state) {
+        case SystemState::BOOT:     on = true;               break; // solid
+        case SystemState::IDLE:     on = (t % 2000) < 150;    break; // slow single blink
+        case SystemState::ARMED:    on = (t % 500)  < 250;    break; // steady 2Hz blink
+        case SystemState::DROPPING: on = (t % 100)  < 50;     break; // rapid blink
+        case SystemState::FAULT:    on = (t % 1000) < 500;    break; // slow 50% on/off
+        default:                    on = false;
+    }
+    digitalWrite(_led_pin, on ? HIGH : LOW);
 }

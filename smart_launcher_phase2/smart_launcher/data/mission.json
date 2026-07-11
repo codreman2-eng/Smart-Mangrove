@@ -4,9 +4,9 @@
   "position_source": "GNSS",
   "modules": {
     "A": {
-      "servo_open_pwm_us": 1700,
+      "servo_open_pwm_us": 1450,
       "servo_stop_pwm_us": 1650,
-      "travel_ms": 350,
+      "travel_ms": 580,
       "door_count": 5
     },
     "B": {

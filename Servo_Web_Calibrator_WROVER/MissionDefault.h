@@ -1,0 +1,51 @@
+#pragma once
+#include <Arduino.h>
+
+// Self-seeded default mission.json — written to LittleFS on first boot only
+// if /mission.json doesn't already exist. Means a fresh flash needs no
+// separate LittleFS-upload step (Arduino IDE has no bundled equivalent of
+// PlatformIO's `pio run --target uploadfs`).
+//
+// IMPORTANT: Module A's stop_pwm_us here (1670) is the most recent value
+// measured via this same calibrator toolchain — but per PROJECT_HANDOFF.md,
+// do NOT trust it for a real drop without re-verifying fresh first. This is
+// a reasonable starting point for the dashboard's calibration tab, not a
+// promise it's still exactly correct. Module B has never been calibrated —
+// its values are rough theoretical placeholders (see SMART_LAUNCHER_COMPLETE_GUIDE.md
+// gear math) and MUST be measured with Servo_Calibration_Tool_B.ino /
+// the dashboard's Calibration tab before use.
+const char MISSION_DEFAULT_JSON[] PROGMEM = R"json({
+  "mission_name": "mangrove_plot_A",
+  "min_gps_fix_duration_s": 10,
+  "position_source": "GNSS",
+  "modules": {
+    "A": {
+      "servo_open_pwm_us": 1470,
+      "servo_stop_pwm_us": 1670,
+      "travel_ms": 580,
+      "door_count": 5,
+      "reverse": false,
+      "offset_us": 200
+    },
+    "B": {
+      "servo_open_pwm_us": 1300,
+      "servo_stop_pwm_us": 1500,
+      "travel_ms": 350,
+      "door_count": 5,
+      "reverse": false,
+      "offset_us": 200
+    }
+  },
+  "drops": [
+    { "id": 1, "lat_deg": 9.345678, "lon_deg": -79.876543, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 2, "lat_deg": 9.345700, "lon_deg": -79.876520, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 3, "lat_deg": 9.345722, "lon_deg": -79.876497, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 4, "lat_deg": 9.345744, "lon_deg": -79.876474, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 5, "lat_deg": 9.345766, "lon_deg": -79.876451, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 6, "lat_deg": 9.345788, "lon_deg": -79.876428, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 7, "lat_deg": 9.345810, "lon_deg": -79.876405, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 8, "lat_deg": 9.345832, "lon_deg": -79.876382, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 9, "lat_deg": 9.345854, "lon_deg": -79.876359, "alt_m": 8.0, "radius_m": 3.0 },
+    { "id": 10,"lat_deg": 9.345876, "lon_deg": -79.876336, "alt_m": 8.0, "radius_m": 3.0 }
+  ]
+})json";
