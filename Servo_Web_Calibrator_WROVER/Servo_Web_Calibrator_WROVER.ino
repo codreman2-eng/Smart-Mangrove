@@ -85,6 +85,7 @@
 #include "DropLogicEngine.h"
 #include "MissionDefault.h"
 #include "SimPositionSource.h"
+#include "OsdkPositionSource.h"
 #include "RcPwmInput.h"
 
 #if !SIM_MODE
@@ -99,11 +100,22 @@ ConfigManager      cfg;
 Logger             logger;
 StateMachine       sm(PIN_LED, PIN_ARM_BUTTON, PIN_WAIT_LED);
 GNSSPositionSource gnssSource(1, PIN_GNSS_RX, PIN_GNSS_TX, 9600);
+
+// DJI M600 A3 Pro broadcast — 50Hz fused position, read-only. Wrapped so a
+// loose connector degrades to the onboard M8N instead of taking the
+// launcher's position away entirely, and so this same firmware still runs
+// on the DIY ArduPilot aircraft, which has no OSDK at all.
+OsdkPositionSource     osdkSource(2, PIN_OSDK_RX, PIN_OSDK_TX, OSDK_BAUD);
+FallbackPositionSource realSource(osdkSource, gnssSource);
+
 #if SIM_MODE
+// In SIM builds the fake source sits IN FRONT of the real one and only
+// takes over once a position is injected — so a fresh SIM boot runs on real
+// aircraft position (the walk test) while /simpos still works indoors.
 SimPositionSource  simSource;
 IPositionSource*   posSource = &simSource;
 #else
-IPositionSource*   posSource = &gnssSource;
+IPositionSource*   posSource = &realSource;
 #endif
 
 // Constructed with placeholder values here, rebuilt from config in setup()
@@ -814,6 +826,13 @@ void handleStatus() {
     j += ",\"rcGl\":"   + String(rcIn.glitchCount());
     j += ",\"rcSafe\":" + String(rcIn.safeMaxUs());
     j += ",\"rcFire\":" + String(rcIn.fireMinUs());
+    // OSDK link health — the walk test reads these to tell "no fix yet" from
+    // "not receiving anything", which look identical from the LED alone.
+    j += ",\"osdkFr\":"  + String(osdkSource.frames());
+    j += ",\"osdkErr\":" + String(osdkSource.crcErrors());
+    j += ",\"osdkFlag\":" + String(osdkSource.passFlag());
+    j += ",\"osdkOk\":"  + String(osdkSource.hasFix() ? "true" : "false");
+    j += ",\"posSrc\":\"" + String(realSource.onPrimary() ? "OSDK" : "GNSS") + "\"";
 #if SIM_MODE
     j += ",\"sim\":true";
 #else
@@ -844,11 +863,12 @@ void setup() {
     sm.begin();
 
 #if SIM_MODE
-    Serial.println("[4] Position source (SIM — inject via /simpos)");
+    Serial.println("[4] Position source (SIM — real OSDK/GNSS until /simpos injects)");
+    simSource.setFallback(&realSource);
     posSource = &simSource;
 #else
-    Serial.println("[4] Position source (GNSS)");
-    posSource = &gnssSource;
+    Serial.println("[4] Position source (OSDK GPIO25 @921600, GNSS fallback)");
+    posSource = &realSource;
 #endif
     posSource->begin();
 
@@ -913,6 +933,13 @@ void setup() {
 // ─── Loop ────────────────────────────────────────────────────────────
 void loop() {
     server.handleClient();
+
+    // Drain the position source EVERY iteration. DropLogicEngine only calls
+    // update() on its armed-and-idle path, which is nowhere near often
+    // enough: OSDK delivers 231-byte frames every 20ms at 921600 into a
+    // 128-byte hardware FIFO, so anything less than continuous servicing
+    // loses bytes. Cheap when there is nothing to read.
+    posSource->update();
 
     // Door-drop polling — MUST run before engine->update() so it sees
     // isDropping() already transitioned to false on completion this tick.

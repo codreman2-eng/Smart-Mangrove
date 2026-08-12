@@ -42,6 +42,25 @@
 // before trusting this path in the dashboard firmware.
 #define PIN_RC_IN     35
 
+// ─── DJI OSDK API port (M600 A3 Pro) — UART2, read-only ───────────────
+//
+// NOT GPIO 16/17. Serial2's DEFAULT pins are 16/17, and on WROVER modules
+// those are the PSRAM bus — the same trap as GPIO 9/10. The pins must be
+// passed explicitly to Serial2.begin(). UART0 is the console and UART1 is
+// the GNSS (GPIO 4/5), so OSDK gets UART2.
+//
+//   A3 API TX -> GPIO 25   (330R series optional)
+//   A3 API GND-> ESP32 GND (MANDATORY)
+//   A3 API RX / VCC: NOT CONNECTED — this link is receive-only by design
+//
+// Both sides are 3.3V; no level shifter. 921600 baud as set in DJI
+// Assistant 2. Trimming the broadcast there to POSITION+GPS+RC+STATUS cuts
+// the frame from 231 to ~60 bytes; the decoder computes field offsets from
+// the passFlag, so that change is safe.
+#define PIN_OSDK_RX   25
+#define PIN_OSDK_TX   26   // wired for future use; never driven today
+#define OSDK_BAUD     921600
+
 // ─── Indicator LEDs ───────────────────────────────────────────────────
 //
 // Yellow "WAIT" LED — system-state semaphore, present in BOTH sim and

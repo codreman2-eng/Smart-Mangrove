@@ -23,9 +23,17 @@ public:
                        "injected via /simpos?lat=..&lon=..");
     }
 
-    void update() override {}                       // nothing to parse
-    Position read()   override { return _p; }
-    bool     hasFix() override { return _p.valid; }
+    // Falls through to a real source until a position is injected. That is
+    // what makes the walk test possible: a SIM build (LEDs, no servo output)
+    // driven by REAL aircraft position, so waypoint triggering can be proven
+    // by carrying the M600 towards a waypoint and watching GPIO 14 — no
+    // flight, nothing that can move. Injecting overrides it for indoor work;
+    // /simpos?clear=1 hands control back.
+    void setFallback(IPositionSource* real) { _real = real; }
+
+    void update() override { if (_real) _real->update(); }
+    Position read()   override { return _p.valid ? _p : (_real ? _real->read() : _p); }
+    bool     hasFix() override { return _p.valid || (_real && _real->hasFix()); }
 
     void inject(double lat, double lon) {
         _p.lat_deg    = lat;
@@ -43,7 +51,8 @@ public:
     }
 
 private:
-    Position _p;   // .valid defaults false
+    Position         _p;             // .valid defaults false
+    IPositionSource* _real = nullptr; // used until a position is injected
 };
 
 #endif  // SIM_MODE
