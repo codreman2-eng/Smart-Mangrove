@@ -80,7 +80,12 @@ static void IRAM_ATTR rcEdgeIsr() {
 
 // ─── Stats ─────────────────────────────────────────────────────────────
 static uint16_t width_us = 0, min_seen = 0xFFFF, max_seen = 0;
-static uint32_t frames = 0, glitches = 0, last_seq = 0, last_ok_ms = 0;
+// Two glitch sources, counted separately then summed for display. They must
+// NOT share one variable: the ISR count is a snapshot that gets re-read every
+// frame, so folding the loop-side count into it means each new frame wipes the
+// running total and the display sticks at 1 instead of climbing.
+static uint32_t frames = 0, glitches_soft = 0, glitches = 0;
+static uint32_t last_seq = 0, last_ok_ms = 0;
 static uint32_t rate_base = 0, rate_win = 0;
 static uint16_t rate_hz = 0;
 
@@ -149,7 +154,8 @@ static void handleLine(String line) {
         case 'h': help(); break;
         case 'g': suggest(); break;
         case 'r':
-            min_seen = 0xFFFF; max_seen = 0; frames = 0; glitches = 0;
+            min_seen = 0xFFFF; max_seen = 0; frames = 0;
+            glitches = 0; glitches_soft = 0;
             portENTER_CRITICAL(&mux); isr_glitch = 0; portEXIT_CRITICAL(&mux);
             Serial.println("[OK] stats reset");
             break;
@@ -205,7 +211,6 @@ void loop() {
 
     if (seq != last_seq) {
         last_seq = seq;
-        glitches = g;
         if (w >= WIDTH_MIN_US && w <= WIDTH_MAX_US) {
             width_us   = (uint16_t)w;
             last_ok_ms = now;
@@ -213,9 +218,10 @@ void loop() {
             if (width_us < min_seen) min_seen = width_us;
             if (width_us > max_seen) max_seen = width_us;
         } else {
-            glitches++;
+            glitches_soft++;   // passed the ISR window, failed the strict RC range
         }
     }
+    glitches = g + glitches_soft;
 
     if (now - rate_win >= 1000) {
         rate_hz   = (uint16_t)(frames - rate_base);

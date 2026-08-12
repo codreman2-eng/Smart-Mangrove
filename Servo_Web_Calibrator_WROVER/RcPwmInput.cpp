@@ -89,8 +89,9 @@ void RcPwmInput::setBands(uint16_t safe_max_us, uint16_t fire_min_us,
 void RcPwmInput::resetStats() {
     _min_seen  = 0xFFFF;
     _max_seen  = 0;
-    _frames_ok = 0;
-    _glitches  = 0;
+    _frames_ok     = 0;
+    _glitches      = 0;
+    _soft_glitches = 0;
     portENTER_CRITICAL(&s_rcMux);
     s_glitch = 0;
     portEXIT_CRITICAL(&s_rcMux);
@@ -111,7 +112,6 @@ void RcPwmInput::update() {
 
     if (seq != _last_seq) {
         _last_seq = seq;
-        _glitches = glitch;
 
         if (width >= WIDTH_MIN_US && width <= WIDTH_MAX_US) {
             _width_us   = (uint16_t)width;
@@ -147,9 +147,12 @@ void RcPwmInput::update() {
                 _has_signal = true;
             }
         } else {
-            _glitches++;   // in-ISR-window but outside the strict RC range
+            _soft_glitches++;   // in-ISR-window but outside the strict RC range
         }
     }
+    // Summed, never folded into one counter: `glitch` is a snapshot re-read
+    // every frame, so accumulating into it would wipe the running total.
+    _glitches = glitch + _soft_glitches;
 
     // Signal loss — never a trigger, always a revocation.
     if (_has_signal && (now - _last_ok_ms) > _timeout_ms) {

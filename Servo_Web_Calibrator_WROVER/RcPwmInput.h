@@ -100,7 +100,8 @@ private:
     uint16_t _min_seen   = 0xFFFF;
     uint16_t _max_seen   = 0;
     uint32_t _frames_ok  = 0;
-    uint32_t _glitches   = 0;
+    uint32_t _glitches   = 0;   // ISR count + _soft_glitches, recomputed each frame
+    uint32_t _soft_glitches = 0; // passed the ISR window, failed the strict range
     uint32_t _last_ok_ms = 0;
 
     // frame-rate estimate
