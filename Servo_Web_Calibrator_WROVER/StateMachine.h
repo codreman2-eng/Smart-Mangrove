@@ -11,7 +11,10 @@ enum class SystemState {
 
 class StateMachine {
 public:
-    StateMachine(uint8_t led_pin, uint8_t arm_btn_pin);
+    // led_pin      : the existing state LED (blink cadence per state)
+    // wait_pin     : yellow WAIT LED — steady ON means "armed, waiting for
+    //                a trigger". Present in flight builds too, not sim-only.
+    StateMachine(uint8_t led_pin, uint8_t arm_btn_pin, uint8_t wait_pin);
 
     void begin();
 
@@ -39,6 +42,7 @@ public:
 private:
     uint8_t     _led_pin;
     uint8_t     _btn_pin;
+    uint8_t     _wait_pin;
     SystemState _state        = SystemState::BOOT;
     uint32_t    _btn_press_t  = 0;
     bool        _btn_held     = false;
@@ -48,6 +52,11 @@ private:
     // Plain 2-pin LED — states are distinguished by blink pattern, not
     // colour (no WS2812 on this board). Called every update().
     void _updateLED();
+
+    // Yellow WAIT LED. Deliberately DARK during DROPPING so the announce
+    // LED has the floor — the pair reads as a semaphore: yellow steady
+    // (holding) -> yellow dark + announce lit (firing) -> yellow steady.
+    void _updateWaitLED();
 
     // Long press threshold for ARM/DISARM
     static const uint32_t ARM_HOLD_MS = 2000;

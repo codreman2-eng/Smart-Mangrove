@@ -34,9 +34,13 @@ public:
     // stop_pwm_us  : PWM to stop servo
     // travel_ms    : time to travel exactly one door width (35mm)
     // door_count   : total doors this module has
+    // id           : 'A' or 'B' — only used to pick the SIM confirm-flash
+    //                pattern so the two modules are distinguishable on the
+    //                single shared announce LED. No effect in flight builds.
     ActuatorModule(uint8_t servo_pin, uint8_t limit_pin,
                    uint16_t open_pwm_us, uint16_t stop_pwm_us,
-                   uint32_t travel_ms, uint8_t door_count);
+                   uint32_t travel_ms, uint8_t door_count,
+                   char id = 'A');
 
     // Call once at startup
     void begin();
@@ -84,6 +88,7 @@ private:
     uint16_t _stop_pwm_us;
     uint32_t _travel_ms;
     uint8_t  _door_count;
+    char     _id;
     uint8_t  _doors_dropped = 0;
 
     bool       _active       = false;
@@ -91,6 +96,17 @@ private:
     bool       _is_last_door = false;
     uint32_t   _timeout_ms   = 0;
     DropResult _lastResult   = DropResult::OK;
+
+    // SIM-only post-drop confirmation blips. Non-blocking by the same rule
+    // as everything else in this class — a blocking flash routine would
+    // reintroduce exactly the watchdog/dashboard-freeze defect class this
+    // firmware was rewritten to avoid.
+    bool     _flashActive    = false;
+    bool     _flashOn        = false;
+    uint8_t  _flashRemaining = 0;
+    uint32_t _flashNext      = 0;
+    void _startConfirmFlash(uint8_t count);
+    void _updateFlash();
 
     void _writePWM(uint16_t pulse_us);
     // Timeout = travel_ms * 3 (generous — limit switch should fire sooner)

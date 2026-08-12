@@ -42,6 +42,16 @@ struct DropPoint {
 // Position source selection
 enum class PositionSource { GNSS, MAVLINK };
 
+// Pilot RC trigger (M600 A3 Pro F-channel) — SUPPLEMENTS GPS waypoint
+// auto-fire, does not replace it. Calibrate with RC_Input_Calibration_Tool.ino.
+struct RcTriggerConfig {
+    bool     enabled           = true;
+    uint16_t safe_max_us       = 1300;   // <= this is SAFE
+    uint16_t fire_min_us       = 1700;   // >= this is FIRE
+    uint8_t  frames_to_confirm = 5;      // consecutive frames to accept a band
+    uint16_t signal_timeout_ms = 500;    // no valid frame for this long = no signal
+};
+
 // Full mission config
 struct MissionConfig {
     String          mission_name;
@@ -49,6 +59,7 @@ struct MissionConfig {
     PositionSource  position_source        = PositionSource::GNSS;
     ModuleConfig    module_a;
     ModuleConfig    module_b;
+    RcTriggerConfig rc_trigger;
     DropPoint       drops[10];
     uint8_t         drop_count             = 0;
     bool            loaded                 = false;
@@ -78,6 +89,8 @@ public:
                     uint32_t travel_ms, bool reverse, uint16_t offset_us);
     void setModuleB(uint16_t open_pwm_us, uint16_t stop_pwm_us,
                     uint32_t travel_ms, bool reverse, uint16_t offset_us);
+    void setRcTrigger(bool enabled, uint16_t safe_max_us, uint16_t fire_min_us,
+                      uint8_t frames_to_confirm, uint16_t signal_timeout_ms);
 
     // Print config summary to Serial for verification
     void printSummary() const;

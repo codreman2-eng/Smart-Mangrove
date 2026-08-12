@@ -15,9 +15,9 @@ void DropLogicEngine::update() {
     if (_phase == Phase::WAITING_A) {
         if (_modA.isDropping()) return;   // still running, poll() hasn't completed it yet
 
-        const DropPoint& dp = _cfg.config().drops[_pending_idx];
+        uint8_t drop_id = _currentDropId();
         DropResult resA = _modA.lastResult();
-        _recordDrop(dp.id, 0, _modA.doorsDropped(), _pending_pos, resA);
+        _recordDrop(drop_id, 0, _modA.doorsDropped(), _pending_pos, resA);
 
         if (resA == DropResult::FAULT) {
             _sm.setFault("Module A fault during drop");
@@ -26,7 +26,7 @@ void DropLogicEngine::update() {
         }
 
         // Module B fires immediately after A confirms
-        Serial.printf("[DLE] Module B — drop %d\n", dp.id);
+        Serial.printf("[DLE] Module B — drop %d\n", drop_id);
         _modB.startDrop();
         _phase = Phase::WAITING_B;
         return;
@@ -35,14 +35,17 @@ void DropLogicEngine::update() {
     if (_phase == Phase::WAITING_B) {
         if (_modB.isDropping()) return;
 
-        const DropPoint& dp = _cfg.config().drops[_pending_idx];
+        uint8_t drop_id = _currentDropId();
         DropResult resB = _modB.lastResult();
-        _recordDrop(dp.id, 1, _modB.doorsDropped(), _pending_pos, resB);
+        _recordDrop(drop_id, 1, _modB.doorsDropped(), _pending_pos, resB);
 
         _sm.setDropping(false);
-        Serial.printf("[DLE] Drop %d complete\n", dp.id);
+        Serial.printf("[DLE] Drop %d complete%s\n",
+                      drop_id, _manual_pair ? " (pilot RC trigger)" : "");
 
-        _next_drop_idx++;
+        // A pilot-commanded pair must not consume a planned GPS waypoint
+        if (!_manual_pair) _next_drop_idx++;
+        _manual_pair = false;
         _phase = Phase::IDLE;
 
         if (resB == DropResult::FAULT) {
@@ -71,11 +74,36 @@ void DropLogicEngine::update() {
         Serial.printf("[DLE] >>> In radius for WP%d — executing drop\n", dp.id);
         _pending_idx = _next_drop_idx;
         _pending_pos = cur;
+        _manual_pair = false;
         _sm.setDropping(true);
         Serial.printf("[DLE] Module A — drop %d\n", dp.id);
         _modA.startDrop();
         _phase = Phase::WAITING_A;
     }
+}
+
+uint8_t DropLogicEngine::_currentDropId() const {
+    if (_manual_pair) return 0;                       // 0 = pilot/RC commanded
+    if (_pending_idx >= _cfg.config().drop_count) return 0;
+    return _cfg.config().drops[_pending_idx].id;
+}
+
+bool DropLogicEngine::startManualPair() {
+    if (_phase != Phase::IDLE) return false;
+    if (_modA.isDropping() || _modB.isDropping()) return false;
+    // Refuse rather than log a phantom success if module A has nothing left
+    if (_modA.isEmpty()) {
+        Serial.println("[DLE] RC trigger ignored — Module A is empty");
+        return false;
+    }
+
+    _pending_pos = _pos.read();   // may be invalid (no fix) — logged as-is
+    _manual_pair = true;
+    _sm.setDropping(true);
+    Serial.println("[DLE] *** PILOT RC TRIGGER — Module A ***");
+    _modA.startDrop();
+    _phase = Phase::WAITING_A;
+    return true;
 }
 
 void DropLogicEngine::_recordDrop(uint8_t drop_id, uint8_t module_idx,

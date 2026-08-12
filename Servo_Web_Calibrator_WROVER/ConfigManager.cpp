@@ -75,6 +75,19 @@ bool ConfigManager::_parse(const char* path) {
         _cfg.module_b.offset_us         = mb["offset_us"]         | 200;
     }
 
+    // --- RC pilot trigger ---
+    // Absent block = defaults (enabled, 1300/1700). Note the defaults are
+    // only a starting point: they MUST be checked against the real A3
+    // channel with RC_Input_Calibration_Tool.ino before being trusted.
+    JsonObject rc = doc["rc_trigger"];
+    if (!rc.isNull()) {
+        _cfg.rc_trigger.enabled           = rc["enabled"]           | true;
+        _cfg.rc_trigger.safe_max_us       = rc["safe_max_us"]       | 1300;
+        _cfg.rc_trigger.fire_min_us       = rc["fire_min_us"]       | 1700;
+        _cfg.rc_trigger.frames_to_confirm = rc["frames_to_confirm"] | 5;
+        _cfg.rc_trigger.signal_timeout_ms = rc["signal_timeout_ms"] | 500;
+    }
+
     // --- Drop points ---
     JsonArray drops = doc["drops"];
     _cfg.drop_count = 0;
@@ -118,6 +131,13 @@ bool ConfigManager::save() {
     mb["reverse"]           = _cfg.module_b.reverse;
     mb["offset_us"]         = _cfg.module_b.offset_us;
 
+    JsonObject rc = doc["rc_trigger"].to<JsonObject>();
+    rc["enabled"]           = _cfg.rc_trigger.enabled;
+    rc["safe_max_us"]       = _cfg.rc_trigger.safe_max_us;
+    rc["fire_min_us"]       = _cfg.rc_trigger.fire_min_us;
+    rc["frames_to_confirm"] = _cfg.rc_trigger.frames_to_confirm;
+    rc["signal_timeout_ms"] = _cfg.rc_trigger.signal_timeout_ms;
+
     JsonArray drops = doc["drops"].to<JsonArray>();
     for (uint8_t i = 0; i < _cfg.drop_count; i++) {
         JsonObject d = drops.add<JsonObject>();
@@ -157,6 +177,15 @@ void ConfigManager::setModuleB(uint16_t open_pwm_us, uint16_t stop_pwm_us,
     _cfg.module_b.offset_us         = offset_us;
 }
 
+void ConfigManager::setRcTrigger(bool enabled, uint16_t safe_max_us, uint16_t fire_min_us,
+                                 uint8_t frames_to_confirm, uint16_t signal_timeout_ms) {
+    _cfg.rc_trigger.enabled           = enabled;
+    _cfg.rc_trigger.safe_max_us       = safe_max_us;
+    _cfg.rc_trigger.fire_min_us       = fire_min_us;
+    _cfg.rc_trigger.frames_to_confirm = frames_to_confirm;
+    _cfg.rc_trigger.signal_timeout_ms = signal_timeout_ms;
+}
+
 void ConfigManager::printSummary() const {
     if (!_cfg.loaded) { Serial.println("[CFG] No config loaded"); return; }
     Serial.println("=== MISSION CONFIG ===");
@@ -172,6 +201,10 @@ void ConfigManager::printSummary() const {
                   _cfg.module_b.servo_open_pwm_us, _cfg.module_b.servo_stop_pwm_us,
                   _cfg.module_b.travel_ms, _cfg.module_b.door_count,
                   _cfg.module_b.reverse, _cfg.module_b.offset_us);
+    Serial.printf("  RC trigger  : %s  SAFE<=%d  FIRE>=%d  confirm=%d  timeout=%dms\n",
+                  _cfg.rc_trigger.enabled ? "enabled" : "DISABLED",
+                  _cfg.rc_trigger.safe_max_us, _cfg.rc_trigger.fire_min_us,
+                  _cfg.rc_trigger.frames_to_confirm, _cfg.rc_trigger.signal_timeout_ms);
     Serial.printf("  Drop points : %d\n", _cfg.drop_count);
     for (uint8_t i = 0; i < _cfg.drop_count; i++) {
         const DropPoint& dp = _cfg.drops[i];

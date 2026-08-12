@@ -14,6 +14,11 @@
 // its values are rough theoretical placeholders (see SMART_LAUNCHER_COMPLETE_GUIDE.md
 // gear math) and MUST be measured with Servo_Calibration_Tool_B.ino /
 // the dashboard's Calibration tab before use.
+//
+// The rc_trigger band values (1300/1700) are likewise nominal RC-PWM
+// thresholds, NOT measured against the real A3 F-channel. Run
+// RC_Input_Calibration_Tool.ino and write in what that reports before the
+// pilot trigger is trusted to fire anything.
 const char MISSION_DEFAULT_JSON[] PROGMEM = R"json({
   "mission_name": "mangrove_plot_A",
   "min_gps_fix_duration_s": 10,
@@ -35,6 +40,13 @@ const char MISSION_DEFAULT_JSON[] PROGMEM = R"json({
       "reverse": false,
       "offset_us": 200
     }
+  },
+  "rc_trigger": {
+    "enabled": true,
+    "safe_max_us": 1300,
+    "fire_min_us": 1700,
+    "frames_to_confirm": 5,
+    "signal_timeout_ms": 500
   },
   "drops": [
     { "id": 1, "lat_deg": 9.345678, "lon_deg": -79.876543, "alt_m": 8.0, "radius_m": 3.0 },

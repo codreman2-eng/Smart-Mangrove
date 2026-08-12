@@ -3,22 +3,34 @@
 
 ActuatorModule::ActuatorModule(uint8_t servo_pin, uint8_t limit_pin,
                                uint16_t open_pwm_us, uint16_t stop_pwm_us,
-                               uint32_t travel_ms, uint8_t door_count)
+                               uint32_t travel_ms, uint8_t door_count,
+                               char id)
     : _servo_pin(servo_pin), _limit_pin(limit_pin),
       _open_pwm_us(open_pwm_us), _stop_pwm_us(stop_pwm_us),
-      _travel_ms(travel_ms), _door_count(door_count) {}
+      _travel_ms(travel_ms), _door_count(door_count), _id(id) {}
 
 void ActuatorModule::begin() {
     pinMode(_limit_pin, INPUT_PULLUP);
 
+#if SIM_MODE
+    // Deliberately NO ledcAttach() on the servo pin: with nothing attached
+    // the LEDC peripheral never drives GPIO 12/13 at all, so the servo
+    // signal lines stay high-impedance. A hard guarantee, not "PWM we
+    // believe equals the stop value".
+    pinMode(PIN_SIM_LED_A, OUTPUT);
+    digitalWrite(PIN_SIM_LED_A, LOW);
+    Serial.printf("[ACT] Module %c init: *** SIM *** announce LED GPIO%d, "
+                  "servo GPIO%d NOT attached, limit GPIO%d\n",
+                  _id, PIN_SIM_LED_A, _servo_pin, _limit_pin);
+#else
     // v3.x LEDC API — validated on this exact board all session
     ledcAttach(_servo_pin, SERVO_FREQ_HZ, SERVO_RES_BITS);
+    Serial.printf("[ACT] Module %c init: servo GPIO%d limit GPIO%d\n",
+                  _id, _servo_pin, _limit_pin);
+#endif
 
-    // Ensure servo starts stopped
+    // Ensure servo starts stopped (SIM: ensures the LED starts dark)
     writeRaw(_stop_pwm_us);
-
-    Serial.printf("[ACT] Module init: servo GPIO%d limit GPIO%d\n",
-                  _servo_pin, _limit_pin);
 }
 
 bool ActuatorModule::startDrop() {
@@ -39,6 +51,10 @@ bool ActuatorModule::startDrop() {
 }
 
 bool ActuatorModule::poll() {
+    // Confirm blips outlive the drop itself, so this must run BEFORE the
+    // _active guard below.
+    _updateFlash();
+
     if (!_active) return false;
 
     bool sw_hit    = _is_last_door && (digitalRead(_limit_pin) == LOW);
@@ -62,18 +78,54 @@ bool ActuatorModule::poll() {
     }
 
     _doors_dropped++;
+
+    // SIM: blip out which door just dropped, so the event is readable by a
+    // human without stretching the drive window it just measured.
+    _startConfirmFlash(door_num);
     return true;
 }
 
 void ActuatorModule::stop() {
     writeRaw(_stop_pwm_us);
-    _active = false;
-    Serial.println("[ACT] STOP");
+    _active      = false;
+    _flashActive = false;   // e-stop must leave the announce LED dark
+    Serial.printf("[ACT] Module %c STOP\n", _id);
 }
 
 void ActuatorModule::reset() {
     _doors_dropped = 0;
-    Serial.println("[ACT] Reset — doors_dropped = 0");
+    _flashActive   = false;
+    Serial.printf("[ACT] Module %c reset — doors_dropped = 0\n", _id);
+}
+
+void ActuatorModule::_startConfirmFlash(uint8_t count) {
+#if SIM_MODE
+    _flashRemaining = count;
+    _flashOn        = false;
+    _flashActive    = (count > 0);
+    _flashNext      = millis() + SIM_FLASH_LEAD_MS;
+#else
+    (void)count;
+#endif
+}
+
+void ActuatorModule::_updateFlash() {
+#if SIM_MODE
+    if (!_flashActive) return;
+    uint32_t now = millis();
+    if ((int32_t)(now - _flashNext) < 0) return;
+
+    if (_flashOn) {
+        digitalWrite(PIN_SIM_LED_A, LOW);
+        _flashOn = false;
+        if (--_flashRemaining == 0) { _flashActive = false; return; }
+        _flashNext = now + (_id == 'A' ? SIM_FLASH_A_OFF_MS : SIM_FLASH_B_OFF_MS);
+    } else {
+        digitalWrite(PIN_SIM_LED_A, HIGH);
+        _flashOn   = true;
+        _flashNext = now + (_id == 'A' ? SIM_FLASH_A_ON_MS : SIM_FLASH_B_ON_MS);
+    }
+#endif
 }
 
 void ActuatorModule::writeRaw(uint16_t pulse_us) {
@@ -88,7 +140,17 @@ void ActuatorModule::setCalibration(uint16_t open_pwm_us, uint16_t stop_pwm_us,
 }
 
 void ActuatorModule::_writePWM(uint16_t pulse_us) {
+#if SIM_MODE
+    // ── THE ONLY DIVERGENCE FROM THE FLIGHT BUILD ──
+    // The output stage, and nothing else. LED is lit for exactly the window
+    // the servo would be driven: no stretching, no speed multiplier. The
+    // test must not distort the timing it exists to verify.
+    bool driving = (pulse_us != _stop_pwm_us);
+    if (driving) _flashActive = false;   // a new drive window pre-empts a pending confirm
+    digitalWrite(PIN_SIM_LED_A, driving ? HIGH : LOW);
+#else
     // Same math as the calibrator's proven servoWrite(): duty = pulse/20000 * 2^16
     uint32_t duty = (uint32_t)constrain(pulse_us, 1000, 2000) * 65535UL / 20000UL;
     ledcWrite(_servo_pin, duty);
+#endif
 }

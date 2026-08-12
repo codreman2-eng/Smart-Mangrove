@@ -1,14 +1,17 @@
 #include "StateMachine.h"
 
-StateMachine::StateMachine(uint8_t led_pin, uint8_t arm_btn_pin)
-    : _led_pin(led_pin), _btn_pin(arm_btn_pin) {}
+StateMachine::StateMachine(uint8_t led_pin, uint8_t arm_btn_pin, uint8_t wait_pin)
+    : _led_pin(led_pin), _btn_pin(arm_btn_pin), _wait_pin(wait_pin) {}
 
 void StateMachine::begin() {
     pinMode(_btn_pin, INPUT_PULLUP);
     pinMode(_led_pin, OUTPUT);
     digitalWrite(_led_pin, LOW);
+    pinMode(_wait_pin, OUTPUT);
+    digitalWrite(_wait_pin, LOW);
     _setState(SystemState::BOOT);
-    Serial.println("[SM] State machine started — BOOT");
+    Serial.printf("[SM] State machine started — BOOT (state LED GPIO%d, "
+                  "wait LED GPIO%d)\n", _led_pin, _wait_pin);
 }
 
 void StateMachine::update() {
@@ -29,6 +32,7 @@ void StateMachine::update() {
     }
 
     _updateLED();
+    _updateWaitLED();
 }
 
 void StateMachine::requestArm() {
@@ -84,4 +88,22 @@ void StateMachine::_updateLED() {
         default:                    on = false;
     }
     digitalWrite(_led_pin, on ? HIGH : LOW);
+}
+
+void StateMachine::_updateWaitLED() {
+    // Yellow "WAIT" semaphore — see Pins.h. Deliberately the inverse of the
+    // announce LED during DROPPING: yellow steady = holding, yellow dark +
+    // announce lit = firing. Makes the A->B handoff readable at a glance,
+    // and makes an unexpected re-fire after an emergency stop obvious.
+    uint32_t t = millis();
+    bool on;
+    switch (_state) {
+        case SystemState::BOOT:     on = false;             break; // dark until IDLE
+        case SystemState::IDLE:     on = (t % 1500) < 120;  break; // slow blink — powered, not armed
+        case SystemState::ARMED:    on = true;              break; // STEADY — waiting for trigger
+        case SystemState::DROPPING: on = false;             break; // announce LED has the floor
+        case SystemState::FAULT:    on = (t % 200)  < 100;  break; // rapid
+        default:                    on = false;
+    }
+    digitalWrite(_wait_pin, on ? HIGH : LOW);
 }

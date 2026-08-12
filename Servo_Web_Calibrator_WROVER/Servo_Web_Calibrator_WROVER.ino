@@ -84,6 +84,12 @@
 #include "ActuatorModule.h"
 #include "DropLogicEngine.h"
 #include "MissionDefault.h"
+#include "SimPositionSource.h"
+#include "RcPwmInput.h"
+
+#if !SIM_MODE
+#warning "FLIGHT BUILD: candidate defects (a) e-stop may fire Module B mid-sequence, (b) e-stop cannot leave DROPPING, (c) 10 waypoints vs 5 doors logs false OK. See SIM_MODE_VALIDATION_PLAN.md - confirm and fix before real drops."
+#endif
 
 // ─── Objects ────────────────────────────────────────────────────────────
 const char* SSID = "SmartLauncher";
@@ -91,15 +97,32 @@ WebServer server(80);
 
 ConfigManager      cfg;
 Logger             logger;
-StateMachine       sm(PIN_LED, PIN_ARM_BUTTON);
+StateMachine       sm(PIN_LED, PIN_ARM_BUTTON, PIN_WAIT_LED);
 GNSSPositionSource gnssSource(1, PIN_GNSS_RX, PIN_GNSS_TX, 9600);
+#if SIM_MODE
+SimPositionSource  simSource;
+IPositionSource*   posSource = &simSource;
+#else
 IPositionSource*   posSource = &gnssSource;
+#endif
 
 // Constructed with placeholder values here, rebuilt from config in setup()
-ActuatorModule modA(PIN_SERVO_A, PIN_LIMIT_A, 1700, 1500, 350, 5);
-ActuatorModule modB(PIN_SERVO_B, PIN_LIMIT_B, 1300, 1500, 350, 5);
+ActuatorModule modA(PIN_SERVO_A, PIN_LIMIT_A, 1700, 1500, 350, 5, 'A');
+ActuatorModule modB(PIN_SERVO_B, PIN_LIMIT_B, 1300, 1500, 350, 5, 'B');
 
 DropLogicEngine* engine = nullptr;
+
+// Pilot "drop now" trigger from the M600 A3 Pro F-channel. SUPPLEMENTS the
+// GPS waypoint path — it fires a balanced A->B pair without consuming a
+// planned waypoint, and it cannot arm: the dashboard still owns arming, so
+// two independent authorities are required before anything drops.
+RcPwmInput rcIn(PIN_RC_IN);
+
+// Manual (dashboard) drops are not owned by DropLogicEngine, so nothing was
+// moving the state machine into DROPPING for them — the dashboard and the
+// state LED both reported ARMED for the whole manual drop window. Tracked
+// here so the yellow WAIT LED and the reported state are truthful.
+static bool manualDropActive = false;
 
 // ─── GPS fix stability tracking ────────────────────────────────────────
 static uint32_t gps_fix_start_ms = 0;
@@ -194,11 +217,27 @@ static const char HTML1[] =
 "</style></head><body>"
 "<div class='toast' id='toast'></div>"
 "<h1>&#x1F680; Smart Launcher</h1>"
-"<p class='sub'>ESP32 WROVER-E &nbsp;&#183;&nbsp; GPIO 12/13 servos &nbsp;&#183;&nbsp; LED 22 &nbsp;&#183;&nbsp; 192.168.4.1</p>"
+"<p class='sub'>ESP32 WROVER-E &nbsp;&#183;&nbsp; GPIO 12/13 servos &nbsp;&#183;&nbsp; LED 22 &nbsp;&#183;&nbsp; wait 27 &nbsp;&#183;&nbsp; 192.168.4.1</p>"
 "<div class='tabs'>"
 "<button class='tab-btn active' id='tabBtnMission' onclick='showTab(\"mission\")'>Mission Control</button>"
 "<button class='tab-btn' id='tabBtnCal' onclick='showTab(\"cal\")'>Calibration</button>"
 "</div>";
+
+#if SIM_MODE
+// Loud, unmissable, and only present in SIM builds — you must never be in
+// doubt about which firmware is on the board. Sent between HTML1 and the
+// Mission tab (see handleRoot).
+static const char HTML_SIM_BANNER[] =
+"<div style='max-width:720px;margin:0 auto 14px;background:#713f12;border:1px solid #b45309;"
+"border-radius:12px;padding:12px;text-align:center'>"
+"<div style='color:#fbbf24;font-weight:800;font-size:.86rem;letter-spacing:.04em'>"
+"&#x26A0;&#xFE0F; SIM MODE &#8212; NO SERVO OUTPUT</div>"
+"<div style='color:#d1a054;font-size:.68rem;margin-top:5px;line-height:1.6'>"
+"GPIO 12/13 are not attached &#8212; drops announce on the GPIO 14 LED instead.<br>"
+"Timing, state, door counting and drop logic are identical to the flight build.<br>"
+"Inject a position with <b>/simpos?lat=..&amp;lon=..</b> to trigger auto-fire."
+"</div></div>";
+#endif
 
 // Mission Control tab
 static const char HTML_MISSION[] =
@@ -226,6 +265,15 @@ static const char HTML_MISSION[] =
 "<div class='sw'><div id='dotA' class='dot'></div>Module A (GPIO 32)</div>"
 "<div class='sw'><div id='dotB' class='dot'></div>Module B (GPIO 33)</div>"
 "<div class='up' id='up'>--</div></div></div>"
+"<div class='sw-bar'><h2>PILOT RC TRIGGER &nbsp;<span style='color:#374151'>M600 A3 F-channel &#183; GPIO 35</span></h2>"
+"<div class='sw-row'>"
+"<div class='sw'><div id='dotRc' class='dot'></div><span id='rcState'>no signal</span></div>"
+"<div class='sw'><b id='rcUs' style='color:#e5e7eb'>--</b> us</div>"
+"<div class='sw'><span id='rcBand' class='badge s-stop' style='margin:0'>NONE</span></div>"
+"<div class='up' id='rcHz'>-- Hz</div></div>"
+"<div style='font-size:.66rem;color:#6b7280;margin-top:7px;line-height:1.6'>"
+"Supplements GPS &#8212; fires a balanced A&#8594;B pair without consuming a waypoint. "
+"Cannot arm: the dashboard must arm first.</div></div>"
 "<div class='log'><h2>FLIGHT LOG <button class='b-danger' style='width:auto;padding:4px 10px;font-size:.65rem;float:right' onclick='clearLogTap()'>Clear</button></h2>"
 "<pre id='flightLog' style='font-size:.68rem;color:#a3e635;white-space:pre-wrap'>(not loaded — tap Refresh)</pre>"
 "<button class='b-t' onclick='refreshLog()'>Refresh Log</button></div>"
@@ -279,6 +327,36 @@ static const char HTML2[] =
 "<div class='ms-row'><input type='number' id='measB' placeholder='measured mm' min='0' max='500' step='0.5'>"
 "<button class='b-t' style='flex:0 0 auto;padding:8px 10px;margin-top:0' onclick='applyCorrection(\"B\")'>Apply</button></div></div></div>"
 "<button class='b-t' style='max-width:720px;display:block;margin:10px auto' onclick='saveCal()'>&#128190; Save Calibration to mission.json</button>"
+// RC pilot trigger calibration — mirrors RC_Input_Calibration_Tool.ino's
+// workflow (sweep the switch, read the travel, place thresholds) but on the
+// board that will actually fly it. Use the standalone tool first for
+// bring-up: proving an unknown hardware path in isolation has paid for
+// itself twice on this project already.
+"<div class='sw-bar'><h2>RC PILOT TRIGGER <span style='color:#374151'>&#183; GPIO 35 &#183; A3 F-channel</span></h2>"
+"<div class='sw-row' style='margin-bottom:10px'>"
+"<div class='sw'><div id='dotRc2' class='dot'></div><span id='rcState2'>no signal</span></div>"
+"<div class='sw'>Live: <b id='rcUs2' style='color:#e5e7eb'>--</b> us</div>"
+"<div class='sw'><span id='rcBand2' class='badge s-stop' style='margin:0'>NONE</span></div>"
+"<div class='sw'>Seen: <b id='rcRange' style='color:#e5e7eb'>--</b></div>"
+"<div class='up' id='rcHz2'>-- Hz</div></div>"
+"<div class='ref-row'>"
+"<div><label>SAFE max (us)</label><input type='number' id='rcSafe' value='1300' min='1000' max='2000' step='5'></div>"
+"<div><label>FIRE min (us)</label><input type='number' id='rcFire' value='1700' min='1000' max='2000' step='5'></div>"
+"<div><label>Confirm frames</label><input type='number' id='rcFrames' value='5' min='1' max='50' step='1'></div>"
+"<div><label>Timeout (ms)</label><input type='number' id='rcTimeout' value='500' min='100' max='5000' step='50'></div>"
+"</div>"
+"<label style='font-size:.65rem;color:#6b7280;display:flex;align-items:center;gap:5px;margin:6px 0'>"
+"<input type='checkbox' id='rcEn' checked> RC trigger enabled</label>"
+"<div class='btns'>"
+"<button class='b-t' style='margin:0' onclick='rcSweep()'>&#8635; Reset sweep</button>"
+"<button class='b-t' style='margin:0' onclick='rcSuggest()'>&#9998; Suggest from sweep</button>"
+"<button class='b-o' onclick='rcApply(1)'>&#128190; Apply + Save</button></div>"
+"<div style='font-size:.66rem;color:#6b7280;margin-top:8px;line-height:1.7'>"
+"<b style='color:#93c5fd'>Workflow:</b> Reset sweep &rarr; move the pilot switch through <b>every</b> position, "
+"holding each ~2s &rarr; Suggest &rarr; check each position lands in the band you expect &rarr; Apply + Save.<br>"
+"Glitches: <b id='rcGl'>0</b> &#183; frame rate should read ~50 Hz. Anything else means wiring, "
+"common ground or voltage &#8212; fix that before trusting the thresholds."
+"</div></div>"
 "<div class='log'><h2>EVENT LOG</h2><div id='log'></div></div>"
 "<div class='hint'><b>Workflow:</b><br>"
 "1. Set Stop (us) — start from the last saved value, re-verify with a fresh watch-test if unsure.<br>"
@@ -394,6 +472,45 @@ static const char HTML3[] =
 "async function refreshLog(){"
 "try{const r=await fetch('/log');const t=await r.text();"
 "document.getElementById('flightLog').textContent=t;}catch(e){}}"
+// --- RC pilot trigger calibration ---
+"let rcSeen={min:0,max:0};"
+"function rcSweep(){doFetch('/rccal?reset=1').then(r=>{if(r&&r.ok)log('RC sweep reset - move the switch through all positions','#60a5fa');});}"
+"function rcSuggest(){"
+"const sp=rcSeen.max-rcSeen.min;"
+"if(!rcSeen.min||sp<200){toast('Not enough travel seen - sweep the switch first',true);"
+"log('RC suggest: need a full sweep first (seen '+rcSeen.min+'-'+rcSeen.max+'us)','#f87171');return;}"
+// 25%/75% of observed travel — wide dead bands so neither end is reachable
+// by jitter alone. Same rule as the standalone tool, kept in sync deliberately.
+"const s=Math.round(rcSeen.min+sp/4),f=Math.round(rcSeen.min+sp*3/4);"
+"document.getElementById('rcSafe').value=s;document.getElementById('rcFire').value=f;"
+"log('RC suggest from '+rcSeen.min+'-'+rcSeen.max+'us: safe<='+s+' fire>='+f+' - VERIFY each switch position before saving','#4ade80');"
+"toast('Suggested '+s+'/'+f+' - verify, then Apply',false);}"
+"async function rcApply(save){"
+"const s=parseInt(document.getElementById('rcSafe').value);"
+"const f=parseInt(document.getElementById('rcFire').value);"
+"if(isNaN(s)||isNaN(f)||f<=s+50){toast('FIRE min must be >=50us above SAFE max',true);return;}"
+"const q='/rccal?safe='+s+'&fire='+f"
+"+'&frames='+parseInt(document.getElementById('rcFrames').value)"
+"+'&timeout='+parseInt(document.getElementById('rcTimeout').value)"
+"+'&en='+(document.getElementById('rcEn').checked?1:0)+(save?'&save=1':'');"
+"const r=await doFetch(q);"
+"if(!r||!r.ok)return;"
+"log('RC trigger saved: safe<='+s+' fire>='+f,'#4ade80');toast('RC trigger saved',false);}"
+"const RC_CLASS={NONE:'s-stop',SAFE:'s-armed',MID:'s-idle',FIRE:'s-fault'};"
+"function rcPaint(j){"
+"const cls=RC_CLASS[j.rcBand]||'s-stop';"
+"['','2'].forEach(sfx=>{"
+"const dot=document.getElementById('dotRc'+sfx);if(dot)dot.className='dot '+(j.rcSig?'clear':'');"
+"const st=document.getElementById('rcState'+sfx);"
+"if(st)st.textContent=!j.rcEn?'disabled':(j.rcSig?'signal ok':'no signal');"
+"const us=document.getElementById('rcUs'+sfx);if(us)us.textContent=j.rcSig?j.rcUs:'--';"
+"const bd=document.getElementById('rcBand'+sfx);"
+"if(bd){bd.textContent=j.rcBand;bd.className='badge '+cls;}"
+"const hz=document.getElementById('rcHz'+sfx);if(hz)hz.textContent=j.rcHz+' Hz';});"
+"rcSeen.min=j.rcMin;rcSeen.max=j.rcMax;"
+"const rg=document.getElementById('rcRange');"
+"if(rg)rg.textContent=j.rcMin?(j.rcMin+'-'+j.rcMax+'us'):'--';"
+"const gl=document.getElementById('rcGl');if(gl)gl.textContent=j.rcGl;}"
 "const STATE_NAMES=['BOOT','IDLE','ARMED','DROPPING','FAULT'];"
 "const STATE_CLASS=['s-boot','s-idle','s-armed','s-dropping','s-fault'];"
 "async function poll(){"
@@ -410,6 +527,7 @@ static const char HTML3[] =
 "document.getElementById('doorsA').textContent=j.doorsA+'/'+j.doorCountA;"
 "document.getElementById('doorsB').textContent=j.doorsB+'/'+j.doorCountB;"
 "document.getElementById('dropIdx').textContent=j.dropIdx+'/'+j.dropTotal;"
+"rcPaint(j);"
 "}catch(e){}}"
 "setInterval(poll,350);"
 "setInterval(refreshLog,5000);"
@@ -425,9 +543,15 @@ void calWriteRaw(bool isModA, uint16_t pwm) {
 // ─── HTTP handlers — root / calibration (guarded while armed/dropping) ─
 void handleRoot() {
     size_t total = strlen(HTML1) + strlen(HTML_MISSION) + strlen(HTML2) + strlen(HTML3);
+#if SIM_MODE
+    total += strlen(HTML_SIM_BANNER);
+#endif
     server.setContentLength(total);
     server.send(200, "text/html", "");
     server.sendContent(HTML1);
+#if SIM_MODE
+    server.sendContent(HTML_SIM_BANNER);
+#endif
     server.sendContent(HTML_MISSION);
     server.sendContent(HTML2);
     server.sendContent(HTML3);
@@ -531,6 +655,7 @@ void handleDropA() {
     if (!sm.isArmed()) { server.send(409, "text/plain", "not armed"); return; }
     if (engine && engine->isBusy()) { server.send(409, "text/plain", "auto sequence in progress"); return; }
     bool started = modA.startDrop();
+    if (started) { sm.setDropping(true); manualDropActive = true; }
     server.send(started ? 200 : 409, "text/plain", started ? "ok" : "cannot start");
 }
 
@@ -541,8 +666,35 @@ void handleDropB() {
     if (!sm.isArmed()) { server.send(409, "text/plain", "not armed"); return; }
     if (engine && engine->isBusy()) { server.send(409, "text/plain", "auto sequence in progress"); return; }
     bool started = modB.startDrop();
+    if (started) { sm.setDropping(true); manualDropActive = true; }
     server.send(started ? 200 : 409, "text/plain", started ? "ok" : "cannot start");
 }
+
+#if SIM_MODE
+// SIM-only: inject a fake position so the GPS-radius auto-fire path can be
+// exercised indoors with no sky view.
+//   /simpos?lat=9.345678&lon=-79.876543   -> waypoint 1 of the default mission
+//   /simpos?clear=1                       -> back to reporting no fix
+void handleSimPos() {
+    if (server.hasArg("clear")) {
+        simSource.clear();
+        server.send(200, "text/plain", "cleared");
+        return;
+    }
+    if (!server.hasArg("lat") || !server.hasArg("lon")) {
+        server.send(400, "text/plain", "need lat & lon (or clear=1)");
+        return;
+    }
+    double lat = server.arg("lat").toDouble();
+    double lon = server.arg("lon").toDouble();
+    if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
+        server.send(400, "text/plain", "lat/lon out of range");
+        return;
+    }
+    simSource.inject(lat, lon);
+    server.send(200, "text/plain", "ok");
+}
+#endif
 
 void handleStop() {
     // Emergency stop — no confirm, always allowed, idempotent.
@@ -553,6 +705,49 @@ void handleStop() {
     sm.requestDisarm();
     Serial.println("[CMD] *** EMERGENCY STOP ***");
     server.send(200, "text/plain", "stopped");
+}
+
+// RC trigger calibration — set bands live and optionally persist them.
+//   /rccal?safe=1300&fire=1700&frames=5&timeout=500&en=1[&save=1]
+//   /rccal?reset=1     clears min/max/glitch stats (start a fresh sweep)
+void handleRcCal() {
+    if (server.hasArg("reset")) {
+        rcIn.resetStats();
+        server.send(200, "text/plain", "stats reset");
+        return;
+    }
+    // Changing what can fire the launcher while it is armed is exactly the
+    // kind of stale-click hazard the calibration guard already exists for.
+    if (calibrationBlocked()) {
+        server.send(409, "text/plain", "blocked: armed/dropping");
+        return;
+    }
+    if (!server.hasArg("safe") || !server.hasArg("fire")) {
+        server.send(400, "text/plain", "need safe & fire"); return;
+    }
+    uint16_t safe    = constrain(server.arg("safe").toInt(), 1000, 2000);
+    uint16_t fire    = constrain(server.arg("fire").toInt(), 1000, 2000);
+    uint8_t  frames  = server.hasArg("frames")  ? constrain(server.arg("frames").toInt(), 1, 50) : 5;
+    uint16_t timeout = server.hasArg("timeout") ? constrain(server.arg("timeout").toInt(), 100, 5000) : 500;
+    bool     en      = server.hasArg("en") ? (server.arg("en") == "1") : true;
+
+    if (fire <= safe + 50) {
+        server.send(400, "text/plain", "fire_min must be >=50us above safe_max");
+        return;
+    }
+
+    rcIn.setBands(safe, fire, frames, timeout);
+    rcIn.setEnabled(en);
+
+    if (server.hasArg("save")) {
+        cfg.setRcTrigger(en, safe, fire, frames, timeout);
+        bool ok = cfg.save();
+        Serial.printf("[RCCAL] Saved: en=%d safe<=%d fire>=%d frames=%d timeout=%dms\n",
+                      en, safe, fire, frames, timeout);
+        server.send(ok ? 200 : 500, "text/plain", ok ? "saved" : "save failed");
+        return;
+    }
+    server.send(200, "text/plain", "ok");
 }
 
 void handleLog() {
@@ -592,6 +787,22 @@ void handleStatus() {
     j += ",\"doorCountB\":" + String(modB.doorCount());
     j += ",\"dropIdx\":" + String(engine ? engine->nextDropIndex() : 0);
     j += ",\"dropTotal\":" + String(mc.drop_count);
+    // RC pilot trigger — live values feed the Calibration tab's RC card
+    j += ",\"rcEn\":"   + String(rcIn.enabled() ? "true" : "false");
+    j += ",\"rcSig\":"  + String(rcIn.hasSignal() ? "true" : "false");
+    j += ",\"rcUs\":"   + String(rcIn.widthUs());
+    j += ",\"rcBand\":\"" + String(RcPwmInput::bandName(rcIn.band())) + "\"";
+    j += ",\"rcHz\":"   + String(rcIn.frameRateHz());
+    j += ",\"rcMin\":"  + String(rcIn.minSeenUs() == 0xFFFF ? 0 : rcIn.minSeenUs());
+    j += ",\"rcMax\":"  + String(rcIn.maxSeenUs());
+    j += ",\"rcGl\":"   + String(rcIn.glitchCount());
+    j += ",\"rcSafe\":" + String(rcIn.safeMaxUs());
+    j += ",\"rcFire\":" + String(rcIn.fireMinUs());
+#if SIM_MODE
+    j += ",\"sim\":true";
+#else
+    j += ",\"sim\":false";
+#endif
     j += "}";
     server.send(200, "application/json", j);
 }
@@ -616,23 +827,39 @@ void setup() {
     Serial.println("[3] State machine (LED GPIO22, ARM button GPIO0 best-effort)");
     sm.begin();
 
+#if SIM_MODE
+    Serial.println("[4] Position source (SIM — inject via /simpos)");
+    posSource = &simSource;
+#else
     Serial.println("[4] Position source (GNSS)");
     posSource = &gnssSource;
+#endif
     posSource->begin();
 
+#if SIM_MODE
+    Serial.println("[5] Actuators *** SIM MODE — announce LED GPIO14, "
+                   "servo GPIO12/13 NOT attached ***");
+#else
     Serial.println("[5] Actuators (servo GPIO12/13, limit GPIO32/33)");
+#endif
     const MissionConfig& mc = cfg.config();
     modA = ActuatorModule(PIN_SERVO_A, PIN_LIMIT_A,
                           mc.module_a.servo_open_pwm_us, mc.module_a.servo_stop_pwm_us,
-                          mc.module_a.travel_ms, mc.module_a.door_count);
+                          mc.module_a.travel_ms, mc.module_a.door_count, 'A');
     modB = ActuatorModule(PIN_SERVO_B, PIN_LIMIT_B,
                           mc.module_b.servo_open_pwm_us, mc.module_b.servo_stop_pwm_us,
-                          mc.module_b.travel_ms, mc.module_b.door_count);
+                          mc.module_b.travel_ms, mc.module_b.door_count, 'B');
     modA.begin();
     modB.begin();
 
     Serial.println("[6] Drop logic engine");
     engine = new DropLogicEngine(cfg, *posSource, modA, modB, sm, logger);
+
+    Serial.println("[6b] RC pilot trigger (GPIO35, input-only + external 10k pull-down)");
+    rcIn.setBands(mc.rc_trigger.safe_max_us, mc.rc_trigger.fire_min_us,
+                  mc.rc_trigger.frames_to_confirm, mc.rc_trigger.signal_timeout_ms);
+    rcIn.setEnabled(mc.rc_trigger.enabled);
+    rcIn.begin();
 
     Serial.println("[7] WiFi AP");
     WiFi.mode(WIFI_AP);
@@ -654,6 +881,10 @@ void setup() {
     server.on("/stop",     handleStop);
     server.on("/log",      handleLog);
     server.on("/clearlog", handleClearLog);
+    server.on("/rccal",    handleRcCal);
+#if SIM_MODE
+    server.on("/simpos",   handleSimPos);
+#endif
     server.begin();
 
     Serial.println("[10] BOOT -> IDLE");
@@ -672,6 +903,30 @@ void loop() {
     modA.poll();
     modB.poll();
     if (engine) engine->update();
+
+    // ── Pilot RC trigger ──────────────────────────────────────────────
+    // Non-blocking; all the range/debounce/timeout/edge rules live in
+    // RcPwmInput. This only decides what a confirmed fire request is
+    // allowed to do — and arming is deliberately NOT one of those things.
+    rcIn.update();
+    if (rcIn.consumeFireEdge()) {
+        if (!sm.isArmed()) {
+            logger.log("RC", "FIRE ignored — not ARMED (arm from the dashboard first)");
+        } else if (!engine) {
+            logger.log("RC", "FIRE ignored — engine not ready");
+        } else if (!engine->startManualPair()) {
+            logger.log("RC", "FIRE ignored — sequence busy or Module A empty");
+        }
+    }
+
+    // Manual drops aren't owned by the engine, so nothing else clears the
+    // DROPPING state they now set. Guarded on the engine being idle so an
+    // engine-driven A->B sequence keeps ownership of the state.
+    if (manualDropActive && !modA.isDropping() && !modB.isDropping()
+        && !(engine && engine->isBusy())) {
+        sm.setDropping(false);
+        manualDropActive = false;
+    }
 
     // GPS stability tracking (informational — dashboard ARM has no gate,
     // matches the original bench-test-friendly design)

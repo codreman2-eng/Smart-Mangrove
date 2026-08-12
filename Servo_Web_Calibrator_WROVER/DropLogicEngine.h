@@ -31,6 +31,18 @@ public:
     // Call every loop iteration, AFTER modA.poll()/modB.poll().
     void update();
 
+    // Start a balanced A-then-B pair on demand — used by the pilot's RC
+    // trigger, which SUPPLEMENTS the GPS waypoint path rather than
+    // replacing it. Reuses the same proven WAITING_A/WAITING_B sequencing
+    // as an automatic drop (rather than duplicating it in the .ino), so
+    // module B still fires only after A reports done, preserving balance.
+    //
+    // Deliberately does NOT advance the waypoint index and logs with
+    // drop_id 0 — a pilot-commanded drop must not silently consume a
+    // planned GPS waypoint. Caller still owns the ARMED check.
+    // Returns false if a sequence is already in progress or A is empty.
+    bool startManualPair();
+
     // True when all drops are complete
     bool missionComplete() const;
 
@@ -55,6 +67,10 @@ private:
     Phase    _phase         = Phase::IDLE;
     uint8_t  _pending_idx   = 0;   // drops[] index currently in flight
     Position _pending_pos;         // position captured at trigger time, for logging
+    bool     _manual_pair   = false; // in-flight sequence came from the RC trigger
+
+    // drop id to log for the in-flight sequence (0 = pilot/RC commanded)
+    uint8_t _currentDropId() const;
 
     void _recordDrop(uint8_t drop_id, uint8_t module_idx,
                      uint8_t door_num, const Position& pos,
