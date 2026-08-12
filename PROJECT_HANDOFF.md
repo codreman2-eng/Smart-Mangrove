@@ -681,7 +681,15 @@ it — consistent with `DESIGN_RATIONALE.md`. Drop logic stays on the launcher.
 - Driver issue was resolved (CubePilot driver + reboot).
 - For later MAVLink position source (Phase 4): TELEM2 = SERIAL2.
   Set SERIAL2_PROTOCOL=2, SERIAL2_BAUD=57, SR2_POSITION=4.
-  TELEM2 JST-GH 6pin: pin2 TX -> ESP32 GPIO16, pin3 RX -> ESP32 GPIO17, pin6 GND. 3.3V, no shifter.
+  TELEM2 JST-GH 6pin: pin2 TX, pin3 RX, pin6 GND. 3.3V, no shifter.
+- **PIN CORRECTION (2026-08-12):** this section previously specified ESP32
+  **GPIO 16/17** for that UART. That is WRONG on this hardware and would have
+  failed exactly like the GPIO 9/10 bug: **GPIO 16 and 17 are wired to the
+  PSRAM chip on WROVER modules** and are not available as general I/O.
+  Use **GPIO 25 (RX) / GPIO 26 (TX)** instead — both free, neither a
+  strapping pin, no boot-time glitch. UART1 is already taken by the GNSS on
+  GPIO 4/5, so this is UART2. Same correction applies to the DJI OSDK API
+  port if that path is pursued.
 - The launcher is INDEPENDENT of the Cube. They only share nothing but the user may later
   feed MAVLink position. Default is onboard GNSS.
 - This independence is a deliberate architectural decision, not an accident of how the project
