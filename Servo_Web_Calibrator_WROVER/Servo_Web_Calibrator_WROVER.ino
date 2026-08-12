@@ -246,8 +246,39 @@ static const char HTML1[] =
 "<h1>&#x1F680; Smart Launcher</h1>"
 "<p class='sub'>ESP32 WROVER-E &nbsp;&#183;&nbsp; GPIO 12/13 servos &nbsp;&#183;&nbsp; LED 22 &nbsp;&#183;&nbsp; wait 27 &nbsp;&#183;&nbsp; 192.168.4.1</p>"
 "<div class='tabs'>"
-"<button class='tab-btn active' id='tabBtnMission' onclick='showTab(\"mission\")'>Mission Control</button>"
+"<button class='tab-btn active' id='tabBtnMission' onclick='showTab(\"mission\")'>Control</button>"
+"<button class='tab-btn' id='tabBtnWp' onclick='showTab(\"wp\")'>Waypoints</button>"
 "<button class='tab-btn' id='tabBtnCal' onclick='showTab(\"cal\")'>Calibration</button>"
+"</div>";
+
+// Waypoints tab. The design centre is ADD WAYPOINT HERE: stand where you
+// want a drop, tap once. No coordinates typed, no laptop, no import format
+// — which is the only workflow that actually works in a mangrove field.
+static const char HTML_WP[] =
+"<div class='tab-panel' id='tabWp'>"
+"<div class='sw-bar'><h2>CURRENT POSITION</h2>"
+"<div class='sw-row'>"
+"<div class='sw'><div id='wpFixDot' class='dot'></div><span id='wpFix'>no fix</span></div>"
+"<div class='sw'><b id='wpHereLL' style='color:#e5e7eb'>--</b></div>"
+"<div class='up' id='wpSrc'>--</div></div>"
+"<div class='ms-row' style='margin-top:10px'>"
+"<label>Radius</label><input type='number' id='wpR' value='3' min='0.5' max='100' step='0.5'>"
+"<label>m</label></div>"
+"<button class='b-o' style='width:100%;padding:14px;margin-top:8px;font-size:.9rem' "
+"onclick='wpHere()'>&#128205; ADD WAYPOINT HERE</button>"
+"</div>"
+"<div class='sw-bar'><h2>MISSION <span id='wpCount' style='color:#374151'></span></h2>"
+"<div id='wpWarn' style='display:none;background:#713f12;border:1px solid #b45309;"
+"border-radius:8px;padding:8px;font-size:.68rem;color:#fbbf24;margin-bottom:8px'></div>"
+"<div id='wpList' style='font-size:.7rem;color:#9ca3af'>(loading)</div>"
+"<div class='btns' style='margin-top:10px'>"
+"<button class='b-t' style='margin:0' onclick='wpRefresh()'>&#8635; Refresh</button>"
+"<button class='b-c' onclick='wpClear()'>Clear all</button>"
+"<button class='b-o' onclick='wpSave()'>&#128190; Save</button></div>"
+"<div style='font-size:.66rem;color:#6b7280;margin-top:8px;line-height:1.6'>"
+"Edits live in RAM until <b>Save</b> writes mission.json. Any edit rewinds "
+"mission progress to waypoint 1. Blocked while armed."
+"</div></div>"
 "</div>";
 
 #if SIM_MODE
@@ -411,11 +442,11 @@ static const char HTML3[] =
 "clearTimeout(window._toastTimer);"
 "window._toastTimer=setTimeout(()=>{t.style.display='none';},3500);}"
 "function showTab(t){"
-"document.getElementById('tabMission').className='tab-panel'+(t==='mission'?' active':'');"
-"document.getElementById('tabCal').className='tab-panel'+(t==='cal'?' active':'');"
-"document.getElementById('tabBtnMission').className='tab-btn'+(t==='mission'?' active':'');"
-"document.getElementById('tabBtnCal').className='tab-btn'+(t==='cal'?' active':'');"
-"}"
+"[['mission','tabMission','tabBtnMission'],['wp','tabWp','tabBtnWp'],"
+"['cal','tabCal','tabBtnCal']].forEach(([k,p,b])=>{"
+"document.getElementById(p).className='tab-panel'+(t===k?' active':'');"
+"document.getElementById(b).className='tab-btn'+(t===k?' active':'');});"
+"if(t==='wp')wpRefresh();}"
 "async function doFetch(url){"
 "try{const r=await fetch(url);"
 "if(!r.ok){const t=await r.text().catch(()=>'');toast('Blocked ('+r.status+'): '+t,true);log('Blocked: '+url+' -> '+r.status+' '+t,'#f87171');}"
@@ -538,6 +569,47 @@ static const char HTML3[] =
 "const rg=document.getElementById('rcRange');"
 "if(rg)rg.textContent=j.rcMin?(j.rcMin+'-'+j.rcMax+'us'):'--';"
 "const gl=document.getElementById('rcGl');if(gl)gl.textContent=j.rcGl;}"
+// --- Waypoints ---
+"let wpFixOk=false;"
+"function wpRender(j){"
+"const L=document.getElementById('wpList');"
+"document.getElementById('wpCount').textContent='('+j.wp.length+'/'+j.max+')';"
+"if(!j.wp.length){L.innerHTML='<i>No waypoints. Walk to a spot and tap ADD WAYPOINT HERE.</i>';}"
+"else{L.innerHTML=j.wp.map((w,i)=>"
+"'<div style=\"display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #1a1e27\">'"
+"+'<b style=\"color:#93c5fd;width:28px\">'+w.id+'</b>'"
+"+'<span style=\"flex:1;font-family:monospace\">'+w.lat.toFixed(6)+', '+w.lon.toFixed(6)+'</span>'"
+"+'<input type=\"number\" value=\"'+w.r+'\" min=\"0.5\" max=\"100\" step=\"0.5\" '"
+"+'style=\"width:56px;background:#111318;border:1px solid #2a2d35;border-radius:4px;color:#f9fafb;text-align:center\" '"
+"+'onchange=\"wpRadius('+i+',this.value)\">'"
+"+'<span style=\"color:#6b7280\">m</span>'"
+"+'<button class=\"b-c\" style=\"padding:3px 8px;font-size:.62rem\" onclick=\"wpDel('+i+')\">X</button>'"
+"+'</div>').join('');}"
+// The 10-waypoint default against 5 doors is a real trap: the engine would
+// log phantom successes once the doors run out. Surface it in the UI.
+"const W=document.getElementById('wpWarn');const cap=Math.min(j.doorsA,j.doorsB);"
+"if(j.wp.length>cap){W.style.display='block';"
+"W.innerHTML='&#9888; '+j.wp.length+' waypoints but only '+cap+' doors per module. '"
+"+'Drops past #'+cap+' cannot fire - they would log as successful with no motion.';}"
+"else W.style.display='none';}"
+"async function wpCall(q){"
+"const r=await doFetch('/mission'+q);"
+"if(!r||!r.ok)return null;"
+"try{const j=await r.json();wpRender(j);return j;}catch(e){return null;}}"
+"function wpRefresh(){wpCall('');}"
+"function wpDel(i){wpCall('?del='+i).then(()=>log('Waypoint removed','#fb923c'));}"
+"function wpRadius(i,v){wpCall('?radius='+i+'&r='+v);}"
+"async function wpHere(){"
+"if(!wpFixOk){toast('No position fix - cannot add a waypoint here',true);return;}"
+"const r=document.getElementById('wpR').value;"
+"const j=await wpCall('?add=here&r='+r);"
+"if(j)  {toast('Waypoint '+j.wp.length+' added here',false);log('Waypoint added at current position','#4ade80');}}"
+"function wpClear(){"
+"if(!confirm('Delete ALL waypoints?'))return;"
+"wpCall('?clear=1').then(()=>log('All waypoints cleared','#fb923c'));}"
+"async function wpSave(){"
+"const r=await doFetch('/mission?save=1');"
+"if(r&&r.ok){toast('Mission saved to mission.json',false);log('mission.json written','#4ade80');}}"
 "const STATE_NAMES=['BOOT','IDLE','ARMED','DROPPING','FAULT'];"
 "const STATE_CLASS=['s-boot','s-idle','s-armed','s-dropping','s-fault'];"
 "async function poll(){"
@@ -555,6 +627,13 @@ static const char HTML3[] =
 "document.getElementById('doorsB').textContent=j.doorsB+'/'+j.doorCountB;"
 "document.getElementById('dropIdx').textContent=j.dropIdx+'/'+j.dropTotal;"
 "rcPaint(j);"
+"wpFixOk=j.gpsValid;"
+"const fd=document.getElementById('wpFixDot');"
+"if(fd){fd.className='dot '+(j.gpsValid?'clear':'');"
+"document.getElementById('wpFix').textContent=j.gpsValid?'fix ok':'no fix';"
+"document.getElementById('wpHereLL').textContent=j.gpsValid?"
+"(j.lat.toFixed(6)+', '+j.lon.toFixed(6)):'--';"
+"document.getElementById('wpSrc').textContent=j.posSrc+' | osdk '+j.osdkFr+'f '+j.osdkErr+'e';}"
 "}catch(e){}}"
 "setInterval(poll,350);"
 "setInterval(refreshLog,5000);"
@@ -569,7 +648,8 @@ void calWriteRaw(bool isModA, uint16_t pwm) {
 
 // ─── HTTP handlers — root / calibration (guarded while armed/dropping) ─
 void handleRoot() {
-    size_t total = strlen(HTML1) + strlen(HTML_MISSION) + strlen(HTML2) + strlen(HTML3);
+    size_t total = strlen(HTML1) + strlen(HTML_MISSION) + strlen(HTML_WP)
+                 + strlen(HTML2) + strlen(HTML3);
 #if SIM_MODE
     total += strlen(HTML_SIM_BANNER);
 #endif
@@ -580,6 +660,7 @@ void handleRoot() {
     server.sendContent(HTML_SIM_BANNER);
 #endif
     server.sendContent(HTML_MISSION);
+    server.sendContent(HTML_WP);
     server.sendContent(HTML2);
     server.sendContent(HTML3);
 }
@@ -778,6 +859,92 @@ void handleRcCal() {
     server.send(200, "text/plain", "ok");
 }
 
+// ─── Waypoints tab ─────────────────────────────────────────────────────
+// One route, action selected by query parameter:
+//   /mission                       list waypoints as JSON
+//   /mission?add=here&r=3          add at the CURRENT position  <- field use
+//   /mission?add=1&lat=&lon=&r=    add explicit coordinates
+//   /mission?del=<index>
+//   /mission?radius=<index>&r=<m>
+//   /mission?clear=1
+//   /mission?save=1                persist to mission.json
+void handleMission() {
+    bool mutate = server.hasArg("add") || server.hasArg("del") ||
+                  server.hasArg("clear") || server.hasArg("radius") ||
+                  server.hasArg("save");
+    // Editing the mission mid-flight is exactly the stale-click hazard the
+    // calibration guard already exists for — the engine indexes into this
+    // list while armed.
+    if (mutate && calibrationBlocked()) {
+        server.send(409, "text/plain", "blocked: armed/dropping"); return;
+    }
+
+    if (server.hasArg("clear")) {
+        cfg.clearDrops();
+        if (engine) engine->resetProgress();
+    } else if (server.hasArg("del")) {
+        if (!cfg.removeDrop(server.arg("del").toInt())) {
+            server.send(400, "text/plain", "bad index"); return;
+        }
+        if (engine) engine->resetProgress();
+    } else if (server.hasArg("radius")) {
+        float r = constrain(server.arg("r").toFloat(), 0.5f, 100.0f);
+        if (!cfg.setDropRadius(server.arg("radius").toInt(), r)) {
+            server.send(400, "text/plain", "bad index"); return;
+        }
+    } else if (server.hasArg("add")) {
+        float r   = server.hasArg("r")   ? constrain(server.arg("r").toFloat(), 0.5f, 100.0f) : 3.0f;
+        float alt = server.hasArg("alt") ? server.arg("alt").toFloat() : 8.0f;
+        double lat, lon;
+        if (server.arg("add") == "here") {
+            Position p = posSource->read();
+            // Refuse rather than silently storing 0,0 — which would be a
+            // waypoint in the Atlantic that never triggers, and would look
+            // like a drop-logic bug rather than a missing fix.
+            if (!p.valid) {
+                server.send(409, "text/plain", "no position fix - cannot add here");
+                return;
+            }
+            lat = p.lat_deg; lon = p.lon_deg;
+            if (server.hasArg("alt") == false) alt = p.alt_m;
+        } else {
+            if (!server.hasArg("lat") || !server.hasArg("lon")) {
+                server.send(400, "text/plain", "need lat & lon"); return;
+            }
+            lat = server.arg("lat").toDouble();
+            lon = server.arg("lon").toDouble();
+            if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+                server.send(400, "text/plain", "lat/lon out of range"); return;
+            }
+        }
+        if (!cfg.addDrop(lat, lon, alt, r)) {
+            server.send(409, "text/plain", "waypoint list full"); return;
+        }
+        if (engine) engine->resetProgress();
+    } else if (server.hasArg("save")) {
+        bool ok = cfg.save();
+        server.send(ok ? 200 : 500, "text/plain", ok ? "saved" : "save failed");
+        return;
+    }
+
+    // Always answer with the current list so the UI never needs a second call
+    const MissionConfig& mc = cfg.config();
+    String j = "{\"max\":" + String(cfg.maxDrops());
+    j += ",\"doorsA\":" + String(modA.doorCount());
+    j += ",\"doorsB\":" + String(modB.doorCount());
+    j += ",\"wp\":[";
+    for (uint8_t i = 0; i < mc.drop_count; i++) {
+        if (i) j += ",";
+        j += "{\"id\":" + String(mc.drops[i].id);
+        j += ",\"lat\":" + String(mc.drops[i].lat_deg, 7);
+        j += ",\"lon\":" + String(mc.drops[i].lon_deg, 7);
+        j += ",\"alt\":" + String(mc.drops[i].alt_m, 1);
+        j += ",\"r\":"   + String(mc.drops[i].radius_m, 1) + "}";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
+}
+
 void handleLog() {
     logger.streamToHttp(server);
 }
@@ -918,6 +1085,7 @@ void setup() {
     server.on("/log",      handleLog);
     server.on("/clearlog", handleClearLog);
     server.on("/rccal",    handleRcCal);
+    server.on("/mission",  handleMission);
 #if SIM_MODE
     server.on("/simpos",   handleSimPos);
 #endif

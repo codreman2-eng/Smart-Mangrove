@@ -92,6 +92,19 @@ public:
     void setRcTrigger(bool enabled, uint16_t safe_max_us, uint16_t fire_min_us,
                       uint8_t frames_to_confirm, uint16_t signal_timeout_ms);
 
+    // Waypoint editing (dashboard Waypoints tab). All operate in RAM; the
+    // caller must still call save() to persist. Drop ids are renumbered
+    // 1..n on every change so they always match list position — the flight
+    // log records the id, and an id that no longer matches what is on the
+    // board makes a post-flight log impossible to interpret.
+    bool    addDrop(double lat_deg, double lon_deg, float alt_m, float radius_m);
+    bool    removeDrop(uint8_t idx);
+    void    clearDrops();
+    bool    setDropRadius(uint8_t idx, float radius_m);
+    uint8_t maxDrops() const { return MAX_DROPS; }
+
+    static const uint8_t MAX_DROPS = 10;
+
     // Print config summary to Serial for verification
     void printSummary() const;
 

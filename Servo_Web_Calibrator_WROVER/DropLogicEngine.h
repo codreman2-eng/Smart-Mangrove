@@ -53,6 +53,12 @@ public:
     // Index of the next pending drop (0-based) — for dashboard progress display.
     uint8_t nextDropIndex() const { return _next_drop_idx; }
 
+    // Rewind mission progress to waypoint 0. MUST be called whenever the
+    // waypoint list is edited: the index is a position into drops[], so
+    // editing the list underneath it would leave the engine pointing at a
+    // different waypoint than the operator thinks, or past the end.
+    void resetProgress() { _next_drop_idx = 0; }
+
 private:
     enum class Phase { IDLE, WAITING_A, WAITING_B };
 

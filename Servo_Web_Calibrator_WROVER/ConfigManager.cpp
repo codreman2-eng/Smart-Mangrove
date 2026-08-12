@@ -186,6 +186,41 @@ void ConfigManager::setRcTrigger(bool enabled, uint16_t safe_max_us, uint16_t fi
     _cfg.rc_trigger.signal_timeout_ms = signal_timeout_ms;
 }
 
+bool ConfigManager::addDrop(double lat_deg, double lon_deg, float alt_m, float radius_m) {
+    if (_cfg.drop_count >= MAX_DROPS) return false;
+    DropPoint& dp = _cfg.drops[_cfg.drop_count];
+    dp.lat_deg   = lat_deg;
+    dp.lon_deg   = lon_deg;
+    dp.alt_m     = alt_m;
+    dp.radius_m  = radius_m;
+    dp.completed = false;
+    dp.id        = ++_cfg.drop_count;      // ids stay 1..n, matching position
+    _cfg.loaded  = true;
+    Serial.printf("[CFG] +WP%d %.7f, %.7f r=%.1fm\n",
+                  dp.id, lat_deg, lon_deg, radius_m);
+    return true;
+}
+
+bool ConfigManager::removeDrop(uint8_t idx) {
+    if (idx >= _cfg.drop_count) return false;
+    for (uint8_t i = idx; i + 1 < _cfg.drop_count; i++) _cfg.drops[i] = _cfg.drops[i + 1];
+    _cfg.drop_count--;
+    for (uint8_t i = 0; i < _cfg.drop_count; i++) _cfg.drops[i].id = i + 1;
+    Serial.printf("[CFG] -WP index %d, %d remain\n", idx, _cfg.drop_count);
+    return true;
+}
+
+void ConfigManager::clearDrops() {
+    _cfg.drop_count = 0;
+    Serial.println("[CFG] all waypoints cleared");
+}
+
+bool ConfigManager::setDropRadius(uint8_t idx, float radius_m) {
+    if (idx >= _cfg.drop_count) return false;
+    _cfg.drops[idx].radius_m = radius_m;
+    return true;
+}
+
 void ConfigManager::printSummary() const {
     if (!_cfg.loaded) { Serial.println("[CFG] No config loaded"); return; }
     Serial.println("=== MISSION CONFIG ===");
@@ -193,13 +228,13 @@ void ConfigManager::printSummary() const {
     Serial.printf("  GPS fix min : %d s\n", _cfg.min_gps_fix_duration_s);
     Serial.printf("  Pos source  : %s\n",
                   _cfg.position_source == PositionSource::MAVLINK ? "MAVLINK" : "GNSS");
-    Serial.printf("  Module A    : open=%d stop=%d travel=%dms doors=%d rev=%d off=%d\n",
+    Serial.printf("  Module A    : open=%d stop=%d travel=%lums doors=%d rev=%d off=%d\n",
                   _cfg.module_a.servo_open_pwm_us, _cfg.module_a.servo_stop_pwm_us,
-                  _cfg.module_a.travel_ms, _cfg.module_a.door_count,
+                  (unsigned long)_cfg.module_a.travel_ms, _cfg.module_a.door_count,
                   _cfg.module_a.reverse, _cfg.module_a.offset_us);
-    Serial.printf("  Module B    : open=%d stop=%d travel=%dms doors=%d rev=%d off=%d\n",
+    Serial.printf("  Module B    : open=%d stop=%d travel=%lums doors=%d rev=%d off=%d\n",
                   _cfg.module_b.servo_open_pwm_us, _cfg.module_b.servo_stop_pwm_us,
-                  _cfg.module_b.travel_ms, _cfg.module_b.door_count,
+                  (unsigned long)_cfg.module_b.travel_ms, _cfg.module_b.door_count,
                   _cfg.module_b.reverse, _cfg.module_b.offset_us);
     Serial.printf("  RC trigger  : %s  SAFE<=%d  FIRE>=%d  confirm=%d  timeout=%dms\n",
                   _cfg.rc_trigger.enabled ? "enabled" : "DISABLED",
