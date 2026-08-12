@@ -43,6 +43,7 @@ USAGE
 """
 
 import argparse
+import struct
 import sys
 import time
 from collections import Counter
@@ -185,6 +186,213 @@ def extract_frames(buf: bytes, crc16_init: int, crc32_init: int):
         frames.append(f)
         i += f.length
     return frames, i, resyncs
+
+
+# ─── Broadcast payload ──────────────────────────────────────────────────
+#   cmd_set(1) | cmd_id(1) | passFlag(uint16) | enabled fields in BIT ORDER
+#
+# The passFlag semantics are CONFIRMED: on a live A3 the bits matched the
+# DJI Assistant 2 rate configuration exactly (RTK and MAG clear because both
+# were "Do Not Send"), and the three observed frame sizes correspond to
+# 0x067F/231B, 0x0E7F/235B (+STATUS) and 0x3E7F/250B (+BATTERY,+DEVICE).
+#
+# The field SIZES below were derived empirically from that capture, not read
+# out of the SDK headers, and they are self-consistent in a way that is hard
+# to achieve by accident:
+#   * POSITION lands on offset 72, where a 16-byte run of zeros sits (lat and
+#     lon as float64 0.0 — the aircraft had no GPS fix indoors), immediately
+#     followed by a stable 78.282 barometric altitude.
+#   * QUATERNION lands on offset 19, and the four float32s there have a norm
+#     of 1.0000. A wrong offset cannot produce a unit quaternion.
+# decode() re-checks that norm at runtime and warns if it drifts, so a
+# firmware change that shifts the layout announces itself instead of quietly
+# producing plausible nonsense.
+#
+# Offsets past POSITION (GPS detail, RC, gimbal) are NOT pinned down. Use
+# --diff to locate RC empirically rather than trusting a guess here.
+FLAG_NAMES = ["TIME", "QUATERNION", "ACCEL", "VELOCITY", "ANG_RATE", "POSITION",
+              "GPS", "RTK", "MAG", "RC", "GIMBAL", "STATUS", "BATTERY", "DEVICE"]
+
+OFF_TIME, OFF_QUAT, OFF_ACCEL, OFF_VEL, OFF_RATE, OFF_POS, OFF_GPS = \
+    4, 19, 35, 47, 60, 72, 97
+RAD2DEG = 57.29577951308232
+
+
+def decode_broadcast(payload: bytes):
+    """Decode what is pinned down. Returns (dict, list_of_warnings)."""
+    d, warn = {}, []
+    if len(payload) < 4:
+        return d, ["payload too short"]
+    d["cmd_set"], d["cmd_id"] = payload[0], payload[1]
+    flag = struct.unpack_from("<H", payload, 2)[0]
+    d["passFlag"] = flag
+    d["fields"] = [n for i, n in enumerate(FLAG_NAMES) if flag >> i & 1]
+
+    def f32(o):
+        return struct.unpack_from("<f", payload, o)[0]
+
+    try:
+        if flag & (1 << 0):
+            d["time_2p5ms"] = struct.unpack_from("<I", payload, OFF_TIME)[0]
+            d["time_ns"] = struct.unpack_from("<I", payload, OFF_TIME + 4)[0]
+        if flag & (1 << 1):
+            q = [f32(OFF_QUAT + 4 * i) for i in range(4)]
+            d["quaternion"] = q
+            norm = sum(x * x for x in q) ** 0.5
+            d["quat_norm"] = norm
+            # The layout self-check. Only a correct offset yields |q| = 1.
+            if abs(norm - 1.0) > 0.01:
+                warn.append(f"quaternion norm {norm:.4f} != 1.0 - "
+                            "field layout is probably WRONG for this firmware")
+        if flag & (1 << 2):
+            d["accel"] = [f32(OFF_ACCEL + 4 * i) for i in range(3)]
+        if flag & (1 << 3):
+            d["velocity"] = [f32(OFF_VEL + 4 * i) for i in range(3)]
+            d["vel_health"] = payload[OFF_VEL + 12]
+        if flag & (1 << 4):
+            d["ang_rate"] = [f32(OFF_RATE + 4 * i) for i in range(3)]
+        if flag & (1 << 5):
+            lat, lon = struct.unpack_from("<dd", payload, OFF_POS)
+            d["lat_rad"], d["lon_rad"] = lat, lon
+            d["lat_deg"], d["lon_deg"] = lat * RAD2DEG, lon * RAD2DEG
+            d["altitude_m"] = f32(OFF_POS + 16)
+            d["height_m"] = f32(OFF_POS + 20)
+            d["pos_health"] = payload[OFF_POS + 24]
+            if lat == 0.0 and lon == 0.0:
+                warn.append("lat/lon are exactly 0 - no GPS fix "
+                            "(expected indoors; recapture outside to confirm)")
+        # Everything from OFF_GPS on is unmapped — expose it raw so --diff
+        # has something to work against without pretending it is decoded.
+        d["tail_hex"] = payload[OFF_GPS:].hex()
+    except struct.error as e:
+        warn.append(f"truncated payload: {e}")
+    return d, warn
+
+
+def print_decoded(d, warn):
+    print(f"  passFlag 0x{d['passFlag']:04X} -> {', '.join(d['fields'])}")
+    if "time_2p5ms" in d:
+        print(f"  time      : {d['time_2p5ms']} x2.5ms  ({d['time_2p5ms']*2.5/1000:.1f}s)")
+    if "quaternion" in d:
+        q = d["quaternion"]
+        print(f"  quaternion: [{q[0]:+.4f} {q[1]:+.4f} {q[2]:+.4f} {q[3]:+.4f}]"
+              f"  |q|={d['quat_norm']:.5f}")
+    for k, lbl in (("accel", "accel     "), ("velocity", "velocity  "),
+                   ("ang_rate", "ang_rate  ")):
+        if k in d:
+            v = d[k]
+            print(f"  {lbl}: [{v[0]:+9.4f} {v[1]:+9.4f} {v[2]:+9.4f}]")
+    if "lat_deg" in d:
+        print(f"  position  : {d['lat_deg']:.7f}, {d['lon_deg']:.7f} deg"
+              f"   alt={d['altitude_m']:.2f}m height={d['height_m']:.2f}m"
+              f" health={d['pos_health']}")
+    for w in warn:
+        print(f"  !! {w}")
+
+
+def run_decode(args):
+    data = open(args.replay, "rb").read() if args.replay else None
+    if data is None:
+        sys.exit("--decode needs --replay <capture.bin>")
+    frames, _, _ = extract_frames(data, args.crc16_init, args.crc32_init)
+    print(f"{len(frames)} frames in {args.replay}\n")
+    n = args.decode if args.decode > 0 else 3
+    for f in frames[:n]:
+        d, w = decode_broadcast(f.payload)
+        print(f"--- seq {f.seq} len {f.length} ---")
+        print_decoded(d, w)
+        print()
+    # Layout confidence over the whole capture, not just the samples shown
+    norms = [decode_broadcast(f.payload)[0].get("quat_norm")
+             for f in frames if f.payload and len(f.payload) > OFF_QUAT + 16]
+    norms = [x for x in norms if x is not None]
+    if norms:
+        bad = sum(1 for x in norms if abs(x - 1.0) > 0.01)
+        print(f"LAYOUT CHECK: quaternion norm across {len(norms)} frames — "
+              f"mean {sum(norms)/len(norms):.5f}, {bad} outside 1.0+/-0.01")
+        print("  -> offsets are correct." if bad == 0 else
+              "  -> LAYOUT IS WRONG for this firmware; re-derive the offsets.")
+
+
+# ─── Diff mode: locate fields by changing them ─────────────────────────
+def _payloads(path, crc16_init, crc32_init):
+    data = open(path, "rb").read()
+    frames, _, _ = extract_frames(data, crc16_init, crc32_init)
+    by_flag = {}
+    for f in frames:
+        if len(f.payload) < 4:
+            continue
+        flag = struct.unpack_from("<H", f.payload, 2)[0]
+        by_flag.setdefault(flag, []).append(f.payload)
+    return by_flag
+
+
+def run_diff(args):
+    """
+    Find which payload bytes changed between two captures.
+
+    The intended use is locating a field with no documentation at all: record
+    one capture with the pilot switch in one position, another with it moved,
+    and whatever bytes are STABLE WITHIN each capture but DIFFERENT BETWEEN
+    them are that switch. Requires no SDK headers and no guessing.
+
+    Constantly-changing bytes (timers, attitude noise, the CRC) are filtered
+    out by the within-capture stability test, which is what makes the result
+    readable instead of a wall of diffs.
+    """
+    a = _payloads(args.diff[0], args.crc16_init, args.crc32_init)
+    b = _payloads(args.diff[1], args.crc16_init, args.crc32_init)
+    common = sorted(set(a) & set(b))
+    if not common:
+        sys.exit("No frame type common to both captures.")
+    flag = max(common, key=lambda f: min(len(a[f]), len(b[f])))
+    pa, pb = a[flag], b[flag]
+    print(f"A: {args.diff[0]}  ({len(pa)} frames of passFlag 0x{flag:04X})")
+    print(f"B: {args.diff[1]}  ({len(pb)} frames)\n")
+
+    n = min(min(len(p) for p in pa), min(len(p) for p in pb))
+    rows = []
+    for off in range(n):
+        va = {p[off] for p in pa}
+        vb = {p[off] for p in pb}
+        stable = len(va) == 1 and len(vb) == 1
+        if stable and va != vb:
+            rows.append((off, va.pop(), vb.pop(), "STABLE-DIFF"))
+        elif len(va) <= 3 and len(vb) <= 3 and not (va & vb):
+            rows.append((off, sorted(va)[0], sorted(vb)[0], "near-stable"))
+
+    if not rows:
+        print("  No stable byte differences. Either nothing was changed between"
+              "\n  captures, or the field is one that also moves on its own.")
+        return
+
+    print("  off   A     B    delta  as int16(LE) A->B         kind")
+    print("  " + "-" * 66)
+    for off, x, y, kind in rows:
+        i16a = i16b = ""
+        if off + 1 < n:
+            try:
+                i16a = struct.unpack_from("<h", pa[0], off)[0]
+                i16b = struct.unpack_from("<h", pb[0], off)[0]
+            except struct.error:
+                pass
+        print(f"  {off:4d}  0x{x:02X}  0x{y:02X}  {y-x:+5d}  "
+              f"{str(i16a):>8} -> {str(i16b):<8}   {kind}")
+
+    grouped, run = [], []
+    for off, *_ in rows:
+        if run and off == run[-1] + 1:
+            run.append(off)
+        else:
+            if run:
+                grouped.append(run)
+            run = [off]
+    if run:
+        grouped.append(run)
+    print("\n  contiguous regions: " +
+          ", ".join(f"{r[0]}..{r[-1]} ({len(r)}B)" for r in grouped))
+    print("  A 2-byte region that tracks a stick or switch is an RC channel")
+    print("  (DJI reports these as int16, roughly -10000..+10000).")
 
 
 class Stats:
@@ -368,6 +576,11 @@ def main():
     p.add_argument("--capture", help="raw capture filename")
     p.add_argument("--replay", help="analyse a saved capture instead of a port")
     p.add_argument("--scan", action="store_true", help="sweep common baud rates")
+    p.add_argument("--decode", type=int, nargs="?", const=3, default=0,
+                   metavar="N", help="decode N frames from --replay (default 3)")
+    p.add_argument("--diff", nargs=2, metavar=("A.bin", "B.bin"),
+                   help="find bytes that differ between two captures "
+                        "(move a switch between them to locate its field)")
     p.add_argument("--hexdump", type=int, metavar="N", help="dump N raw bytes and exit")
     p.add_argument("--verbose", type=int, nargs="?", const=10**9, default=0,
                    help="print each frame (optionally limit count)")
@@ -375,7 +588,11 @@ def main():
     p.add_argument("--crc32-init", type=lambda x: int(x, 0), default=CRC32_INIT_DEFAULT)
     args = p.parse_args()
 
-    if args.replay:
+    if args.diff:
+        run_diff(args)
+    elif args.decode and args.replay:
+        run_decode(args)
+    elif args.replay:
         run_replay(args)
     elif not args.port:
         p.error("--port is required unless --replay is used")
