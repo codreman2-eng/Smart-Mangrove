@@ -59,9 +59,17 @@ This is a legitimate environmental/academic project (mangrove reforestation).
 ### Pin assignments (WROVER-E)
 - Servo A signal -> GPIO 12  (CONFIRMED WORKING)
 - Servo B signal -> GPIO 13
-- Limit switch A -> GPIO 9  (INPUT_PULLUP, active LOW, COM->GND, NO->GPIO)
-- Limit switch B -> GPIO 10
+- Limit switch A -> GPIO 32 (INPUT_PULLUP, active LOW, COM->GND, NO->GPIO)
+- Limit switch B -> GPIO 33
+- State LED      -> GPIO 22 (blink cadence per state)
+- SIM announce LED -> GPIO 14 (drop announcer, SIM builds only — 330R to GND)
+- Yellow WAIT LED  -> GPIO 27 (steady = ARMED and waiting — 330R to GND)
+- RC pilot trigger -> GPIO 35 (input-only, NEEDS external 10k pull-down)
+- GNSS RX/TX     -> GPIO 4 / 5
 - DO NOT USE GPIO 2 — it is a strapping pin on WROVER-E and caused boot crashes.
+- DO NOT USE GPIO 9/10 — permanently on the WROVER flash+PSRAM SPI bus.
+  (The limit switches were originally spec'd there; they were moved to 32/33.)
+- Full pin table with rationale lives in `Servo_Web_Calibrator_WROVER/Pins.h`.
 
 ### Power (CRITICAL - this was a real bug source)
 - Servos MUST be powered from external 5V (UBEC), never from the ESP32.
@@ -547,6 +555,123 @@ whatever's left much faster next session.
 
 ---
 
+## PHASE 3b: SIM MODE — validate everything on an LED, not the servos
+
+**Status: written and compile-verified, NEVER RUN ON HARDWARE.**
+
+The Round 2 caveat above ("this fix is based on code reading, not
+reproduction") plus a checklist of seven items all marked "needs the user
+physically present" was the blocker. The insight that unblocked it: every
+one of those items is timing, state or HTTP behaviour. The servo is only
+the output stage. Swap it for an LED and the whole chain validates with no
+one-way rack retraction, no risk of repeating the runaway incident, and no
+dependency on Module B hardware existing.
+
+`#define SIM_MODE 1` in `Pins.h`:
+- The sim branch lives in `ActuatorModule::_writePWM()` **and nowhere
+  else**. Drop timing, door counting, limit switches, `DropLogicEngine`,
+  `StateMachine` and every HTTP handler run byte-identically to the flight
+  build. A separate `SimActuator` class was explicitly rejected — it would
+  have meant validating code that never flies.
+- The LED is lit for exactly the window the servo would be driven. No
+  stretching, no speed multiplier: the test must not distort the timing it
+  exists to verify. A 580ms drop is a 580ms flash (measurable to ±4ms on a
+  240fps phone slo-mo). Post-drop confirm blips (A short 80ms, B long
+  400ms) make the event readable on one shared LED without touching the
+  drive window.
+- Compile-time, not a runtime toggle: `ledcAttach()` is never called on
+  GPIO 12/13, so the servo lines stay high-impedance rather than carrying
+  "PWM we believe equals the stop value". **Still unplug the servo UBEC
+  for sim runs** — that removes the risk class instead of reasoning about it.
+- `SimPositionSource` + `/simpos?lat=..&lon=..` exercise the GPS-radius
+  auto-fire path indoors with no sky view. Both compile out entirely in
+  flight builds, so no position-injection surface exists by construction.
+- Yellow WAIT LED on GPIO 27: steady when ARMED and waiting, dark during
+  DROPPING so the announce LED has the floor. The pair reads as a
+  semaphore, which makes an unexpected re-fire after an e-stop obvious.
+
+### Four candidate defects found by reading the code
+
+Three are left in DELIBERATELY so the test run can confirm them safely
+rather than have them fixed on a hunch. A `#warning` fires on flight
+builds until they are resolved.
+
+1. **(a) E-stop may fire Module B mid-sequence.** `handleStop()` clears
+   `modA._active` but not `DropLogicEngine::_phase`. From `WAITING_A` the
+   engine's next tick reads that as "A completed OK" and starts B. *The
+   stop button would start the other module.*
+2. **(b) E-stop does not actually disarm.** `requestDisarm()` is guarded to
+   `ARMED`, but the state is `DROPPING`, so it no-ops. Observable symptom
+   is "e-stop leaves you ARMED", not "stuck in DROPPING".
+3. **(c) 10 waypoints vs 5 doors.** `startDrop()`'s `false` return is
+   ignored at `DropLogicEngine.cpp:76`, so drops 6–10 complete instantly
+   and log as successful with no motion at all.
+4. **(d) Manual drops never entered DROPPING — FIXED.** Had to be, or the
+   yellow LED would lie. Side effect, consistent with the sequential-confirm
+   principle: a second manual drop can no longer start while one is running.
+
+**`SIM_MODE_VALIDATION_PLAN.md` is the bench script** — 12 steps for the LED
+dry-run plus B1–B4 and 13–20 for the RC path, each with a pass criterion and
+a fill-in results table. Several have deliberately INVERTED criteria, where
+"must NOT fire" is the thing being proven.
+
+---
+
+## PHASE 3c: PILOT RC TRIGGER (DJI M600 A3 Pro F-channel)
+
+**Status: written and compile-verified, NEVER RUN ON HARDWARE. No signal
+from a real A3 has ever been read.**
+
+Standard RC PWM (1000–2000us at ~50Hz) from an A3 F-channel mapped to an RC
+channel in DJI Assistant 2. Lets the pilot command a drop. **Supplements**
+the GPS waypoint path, does not replace it.
+
+Architecturally this is consuming data from the host, not commanding through
+it — consistent with `DESIGN_RATIONALE.md`. Drop logic stays on the launcher.
+
+- **Read with an `IRAM_ATTR` edge ISR + `micros()`, never `pulseIn()`** —
+  that blocks, which is the exact defect class behind lesson #6 below.
+- **GPIO 35 because it is input-only.** It cannot be configured as an
+  output, so no firmware bug can back-drive the flight controller. Catch:
+  GPIO 34–39 have no internal pull resistors, so an **external 10k
+  pull-down is REQUIRED** or a disconnected wire floats and reads as noise.
+- Safety rules, all in `RcPwmInput::update()`: range gate 800–2200us;
+  5-frame debounce (~100ms); 500ms signal-loss timeout; fail-safe sense
+  (1000us = SAFE, and signal loss NEVER triggers); edge-triggered so
+  holding the switch cannot dump every door; no fire on `NONE -> FIRE`, so
+  powering up with the switch already on is safe.
+- **It cannot arm.** The dashboard still owns arming, so two independent
+  authorities are needed before anything drops.
+- `DropLogicEngine::startManualPair()` reuses the proven
+  `WAITING_A`/`WAITING_B` sequencing, so B still fires only after A reports
+  done (balance preserved). Logs with `drop_id 0` and does NOT advance the
+  waypoint index — a pilot drop must not silently consume a planned GPS
+  waypoint.
+
+### Calibration — two tools, use them in this order
+
+1. **`RC_Input_Calibration_Tool.ino`** (repo root) — standalone, serial
+   only, no WiFi/servo/LittleFS, zero dependency on the dashboard sources.
+   Same philosophy as `servo_minimal.ino`: prove an unknown hardware path
+   in isolation first. Live width, min/max sweep, frame rate, glitch count,
+   and `g` to suggest thresholds from the travel actually observed.
+2. **RC card on the dashboard's Calibration tab** — same workflow (Reset
+   sweep -> Suggest -> Apply + Save) on the board that will actually fly it.
+   Persists to `mission.json`'s `rc_trigger` block via `/rccal`.
+
+### BEFORE CONNECTING ANYTHING — unverified assumptions
+
+- **MEASURE THE A3 F-CHANNEL OUTPUT VOLTAGE.** It should be 3.3V and
+  connect directly, but this has NOT been verified against a datasheet or
+  hardware. If it reads 5V, fit a 10k/20k divider or a level shifter — the
+  ESP32 is not 5V tolerant.
+- Common ground between the M600 and the launcher is mandatory.
+- The 1300/1700 band defaults in `mission.json` are nominal RC values, NOT
+  measured against a real A3. Treat them exactly like Module B's servo
+  values: a starting point, not a promise.
+
+---
+
 ## FLIGHT CONTROLLER (Cube Orange — separate from launcher)
 
 - User has Cube Orange Standard Set. Successfully flashed ArduCopter V4.6.3, CubeOrangePlus.
@@ -614,6 +739,29 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
 8. VCRUNTIME140.dll error in Arduino IDE = Windows issue, fix with VC++ redistributable
    (aka.ms/vs/17/release/vc_redist.x64.exe).
 
+9. NEVER hang an LED (or any load) on the EN / CHIP_PU pin. EN is the chip's reset
+   INPUT, not a GPIO — firmware cannot drive it, so it can only ever indicate
+   "not currently in reset", which is also true during a boot loop. Worse, an LED
+   there clamps EN to ~2.05V against its 10k pull-up, below the ~2.475V V_IH
+   threshold, so the chip may never leave reset — and it loads the EN reset RC cap,
+   which breaks the CH340 auto-reset during flashing (uploads start failing
+   intermittently, which is easy to misdiagnose as a bad cable). For a
+   hardware-only "alive" light, tap the 3V3 rail instead.
+
+10. GPIO 34-39 are INPUT-ONLY on the classic ESP32 and have NO internal pull-up or
+    pull-down. That input-only property is a genuine safety feature for signals
+    coming FROM the flight controller (no firmware bug can back-drive it), which is
+    why the RC trigger uses GPIO 35 — but it means an external pull resistor is
+    mandatory, or a disconnected wire floats and reads as noise instead of silence.
+
+11. Arduino IDE's default "Compiler warnings: None" setting SUPPRESSES `#warning`
+    directives. The flight-build warning about open defects (a)-(c) only shows if
+    Preferences -> Compiler warnings is set to Default or higher. Worth setting
+    permanently on this project.
+
+12. `git commit` in this repo needed an identity — it is now set repo-locally to
+    Carlos Odreman <codreman2@gmail.com>, matching the existing history.
+
 ---
 
 ## CURRENT EXACT STATE / WHERE WE ARE
@@ -621,64 +769,101 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
 - Board settings correct: ESP32 Wrover Module, COM10, 8MB flash, QIO, 80MHz,
   Default 4MB with spiffs, upload 921600.
 - servo_minimal.ino boot instability is resolved — base is solid.
-- Moved on to servo identification/calibration using `Servo_Calibration_Tool_A.ino`
-  (ESP32Servo library, GPIO 12 only, no WiFi/LED/limit switches — same minimal
-  philosophy as servo_minimal.ino).
-- Module A true stop measured: **1650us** (see SERVO CALIBRATION FINDINGS above).
-  Written into `mission.json`. Open/close pulses and travel_ms still need
-  recalibrating around this real stop.
-- Module B not yet calibrated — `Servo_Calibration_Tool_B.ino` created and ready
-  to run (GPIO 13).
+- Module A: open=1450, stop=**1670** (re-measured after the runaway incident;
+  1650 was the earlier figure), travel=580ms, all in `mission.json`. The stop
+  value is worth re-verifying fresh — see the plan's step 1.
+- Module B has NEVER been calibrated and its **hardware is not assembled**.
+  `Servo_Calibration_Tool_B.ino` is written and ready for whenever it exists.
+- **Door-to-door travel deviation on Module A is still un-characterised** (35mm
+  then 41mm at the same 580ms). Still the main open MECHANICAL question, and it
+  compounds across doors — see KNOWN ISSUE above.
+- **SIM mode and the RC pilot trigger are written and compile-verified but have
+  NEVER been run on hardware.** `SIM_MODE` is currently **1** in `Pins.h`, so
+  the sketch as committed is the dry-run build: it will not drive the servos.
+  Flip to 0 for a flight build (and read the `#warning` it emits).
+- Git: work is on branch **`sim-mode-and-rc-trigger`**, two commits ahead of
+  `main`, NOT pushed. Merge to main when the bench run has validated it.
+
+### Compile status (arduino-cli, core 3.3.8 — NOT PlatformIO)
+| Build | Flash | RAM |
+|---|---|---|
+| Dashboard, SIM_MODE 1 | 1,071,008 (81%) | 48,696 (14%) |
+| Dashboard, SIM_MODE 0 | 1,071,243 (81%) | 48,828 (14%) |
+| RC_Input_Calibration_Tool | 304,640 (23%) | 22,756 (6%) |
+
+All clean, no warnings from project code. Two pre-existing `%d`-vs-`uint32_t`
+format warnings remain in `ConfigManager.cpp`/`GNSSPositionSource.cpp`
+(cosmetic, untouched).
 
 ---
 
 ## IMMEDIATE NEXT GOAL
 
-**Module B hardware is not ready/assembled yet.** Decision: proceed with
-Module A alone for now rather than blocking on B — the calibrator tool
-already fully supports B (per-module Stop/Offset/Reverse fields, and
-`Servo_Calibration_Tool_B.ino` is written and ready) so no more tool work
-is needed before B can be picked up whenever the hardware exists.
+**Run the SIM-mode bench validation.** Everything below it is blocked on
+software that has never executed. Follow `SIM_MODE_VALIDATION_PLAN.md`
+top to bottom — it has the pre-run checklist, per-step pass criteria and a
+results table to fill in.
 
-Phase 2 firmware has now been ported to the WROVER-E pinout/API and
-build-verified (see above) — it is NOT yet flashed, waiting on the
-Module A OPEN pwm value and the travel deviation question below.
+Work splits cleanly into a software half (needs only two LEDs and a
+breadboard) and a mechanical half (needs servos, and Module B hardware
+that doesn't exist yet). Do the software half first — it is cheap, safe,
+and gates everything else.
 
-Current sequence:
-1. Get the exact "OPEN=" value the web calibrator currently shows for
-   Module A and write it into `mission.json`'s
-   `modules.A.servo_open_pwm_us` (currently a stale placeholder, 1700).
-2. **Characterize the door-to-door travel deviation on Module A** (see
-   KNOWN ISSUE above) — run the current 580ms setting across all 5 door
-   positions in one sequence, marking/measuring each, to see whether
-   door 1 is uniquely short or whether the deviation grows/accumulates.
-   This determines whether a single global travel_ms is usable, needs a
-   first-door exception, or points to a mechanical problem worth
-   inspecting before trusting this module with real seeds.
-3. Flash the ported Phase 2 firmware (+ `pio run --target uploadfs` for
-   mission.json) and re-verify via the serial bench commands (`arm`,
-   `dropa`, `status`, `log`) that it matches what the calibrator showed —
-   same live-hardware-verification discipline as the rest of this session.
-4. Once travel is acceptably consistent (or compensated for), run bench
-   Test 4 from `SMART_LAUNCHER_COMPLETE_GUIDE.md` for Module A alone —
-   5 consecutive door drops ending in a confirmed limit-switch stop.
-5. When Module B hardware exists: `Servo_Calibration_Tool_B.ino` for its
-   true stop, then the same web calibrator workflow (already supports it)
-   for open/close/travel_ms, then repeat the 5-door consistency check.
-6. Once both modules are calibrated: full two-module bench Test
-   (sequential A-then-B confirm), then move to Phase 3 in the roadmap
-   below (Wi-Fi config upload, NMEA bench replay).
+### Software half — no servos, no aircraft
+1. Wire the two indicator LEDs (GPIO 14 announce, GPIO 27 yellow wait,
+   330R each to GND). **Leave the servo UBEC unplugged.**
+2. Flash the dashboard with `SIM_MODE 1` and run plan steps 1–12. Three
+   steps have inverted pass criteria — they exist to confirm defects
+   (a), (b) and (c), not to pass.
+3. Fix whatever the run confirms. Those are flight-build bugs in shared
+   code, not sim-mode bugs. Re-run the affected steps.
+4. RC trigger bring-up: **measure the A3 F-channel voltage first**, fit
+   the 10k pull-down on GPIO 35, then `RC_Input_Calibration_Tool.ino`
+   (plan steps B1–B4), then the dashboard RC card (steps 13–20). Steps
+   15, 19 and 20 are the "must NOT fire" cases — those matter most.
+
+### Mechanical half — needs real servos
+5. Re-measure Module A's true stop fresh on the Calibration tab. Do not
+   trust 1670 carried forward, even though it came from this toolchain.
+6. **Characterize the door-to-door travel deviation** (KNOWN ISSUE above):
+   run 580ms across all 5 door positions in one sequence, marking and
+   measuring each, to see whether door 1 is uniquely short or the error
+   accumulates. Determines whether one global `travel_ms` is usable, needs
+   a first-door exception, or points at a mechanical fault worth fixing
+   before this module is trusted with real seeds.
+7. Bench Test 4 from `SMART_LAUNCHER_COMPLETE_GUIDE.md` for Module A alone
+   — 5 consecutive door drops ending in a confirmed limit-switch stop.
+8. When Module B hardware exists: `Servo_Calibration_Tool_B.ino` for its
+   true stop, then the dashboard's Calibration tab for open/close/
+   travel_ms, then repeat the 5-door consistency check.
+9. Both modules calibrated -> full two-module bench test (sequential
+   A-then-B confirm) -> Phase 4 (MAVLink position from the Cube's TELEM2).
+
+### Standing rule that keeps paying off
+Build with the **Arduino IDE / arduino-cli toolchain (core 3.3.8)**, not
+PlatformIO. Every calibration number measured through it has held up on
+re-verification; the PlatformIO path's first live drop test caused a real
+servo-runaway safety incident.
 
 ---
 
 ## DEVELOPMENT ROADMAP
 
-- Phase 1 Electronics/schematic/pins/power  - DONE (spec'd)
-- Phase 2 Firmware skeleton                 - DONE (needs WROVER pin port)
-- Phase 3 Config + drop logic + Wi-Fi upload + NMEA bench replay - pending
-- Phase 4 MAVLink position (Cube Orange TELEM2) - pending
-- Phase 5 Python config tool (import QGC/UgCS missions -> mission.json) - pending
-- Phase 6 Testing (bench NMEA -> static drops -> low altitude -> full mission) - pending
+- Phase 1  Electronics/schematic/pins/power - DONE (spec'd)
+- Phase 2  Firmware skeleton                - DONE (ported to WROVER-E, flashed, 2 bugs fixed)
+- Phase 3  Mission Dashboard (Wi-Fi config + drop logic + calibration tab) - BUILT,
+           partially validated (Round 2 fix never reproduced in a browser)
+- Phase 3b SIM mode (LED dry-run + fake position injection) - WRITTEN, NOT RUN
+- Phase 3c Pilot RC trigger (M600 A3 F-channel) + calibrator - WRITTEN, NOT RUN
+- Phase 4  MAVLink position (Cube Orange TELEM2) - pending
+- Phase 5  Python config tool (import QGC/UgCS missions -> mission.json) - pending
+- Phase 6  Testing (bench -> static drops -> low altitude -> full mission) - pending
 
-There is also a full SMART_LAUNCHER_COMPLETE_GUIDE.md (wiring, BOM, calibration, checklists)
-already produced earlier in the project.
+### Document map
+- `SMART_LAUNCHER_COMPLETE_GUIDE.md` — wiring, BOM, calibration, bench checklists.
+- `DESIGN_RATIONALE.md` — why the launcher runs on its own MCU, not the Cube.
+  Reference answer for that question; keep in sync if new incidents change it.
+- `SIM_MODE_VALIDATION_PLAN.md` — the bench script for Phases 3b/3c, with
+  per-step pass criteria and a results table. **This is the next thing to do.**
+- `Servo_Web_Calibrator_WROVER/Pins.h` — the authoritative pin table, with the
+  reasoning for every unsafe pin recorded inline.
