@@ -124,6 +124,21 @@ RcPwmInput rcIn(PIN_RC_IN);
 // here so the yellow WAIT LED and the reported state are truthful.
 static bool manualDropActive = false;
 
+// ─── Flight logging ────────────────────────────────────────────────────
+// 1 Hz periodic telemetry plus event rows on change. At ~150 bytes/row this
+// is roughly 2 hours of flight inside the log's 1.1MB budget — a real
+// mission is 15-20 min, so there is comfortable headroom. Raising this to
+// 5 Hz would fill the budget in about 33 minutes; don't, without also
+// revisiting MAX_LOG_BYTES.
+#define TELEMETRY_INTERVAL_MS 1000
+static uint32_t last_tlm_ms   = 0;
+// Change-detection state, so events are logged once per transition rather
+// than every loop. Centralised here instead of sprinkled through the HTTP
+// handlers — fewer call sites to keep in sync.
+static uint8_t  last_state    = 255;
+static bool     last_rc_sig   = false;
+static uint8_t  last_rc_band  = 255;
+
 // ─── GPS fix stability tracking ────────────────────────────────────────
 static uint32_t gps_fix_start_ms = 0;
 static bool     gps_stable       = false;
@@ -703,6 +718,7 @@ void handleStop() {
     calRunningA = calRunningB = false;
     calTimedActive = false;
     sm.requestDisarm();
+    logger.logEvent("estop");
     Serial.println("[CMD] *** EMERGENCY STOP ***");
     server.send(200, "text/plain", "stopped");
 }
@@ -910,12 +926,17 @@ void loop() {
     // allowed to do — and arming is deliberately NOT one of those things.
     rcIn.update();
     if (rcIn.consumeFireEdge()) {
+        // Every outcome is logged, including the refusals. A refused fire is
+        // exactly what you'd want to see in the log if a pilot reports "I
+        // pressed it and nothing happened".
         if (!sm.isArmed()) {
-            logger.log("RC", "FIRE ignored — not ARMED (arm from the dashboard first)");
+            logger.logEvent("rc_fire", "\"acted\":false,\"why\":\"not_armed\"");
         } else if (!engine) {
-            logger.log("RC", "FIRE ignored — engine not ready");
+            logger.logEvent("rc_fire", "\"acted\":false,\"why\":\"no_engine\"");
         } else if (!engine->startManualPair()) {
-            logger.log("RC", "FIRE ignored — sequence busy or Module A empty");
+            logger.logEvent("rc_fire", "\"acted\":false,\"why\":\"busy_or_empty\"");
+        } else {
+            logger.logEvent("rc_fire", "\"acted\":true");
         }
     }
 
@@ -946,6 +967,54 @@ void loop() {
 
     // State machine (button debounce + LED blink pattern)
     sm.update();
+
+    // ── Flight log ────────────────────────────────────────────────────
+    // Events first (on change), then the periodic row.
+    uint8_t st = (uint8_t)sm.state();
+    if (st != last_state) {
+        char ex[48];
+        snprintf(ex, sizeof(ex), "\"from\":%u,\"to\":%u", last_state, st);
+        logger.logEvent("state", ex);
+        last_state = st;
+    }
+    if (rcIn.hasSignal() != last_rc_sig) {
+        last_rc_sig = rcIn.hasSignal();
+        // Signal loss is fail-safe (it can never fire), but it IS the event
+        // you would want timestamped if a pilot trigger stopped responding.
+        logger.logEvent(last_rc_sig ? "rc_acquired" : "rc_lost");
+    }
+    if ((uint8_t)rcIn.band() != last_rc_band) {
+        last_rc_band = (uint8_t)rcIn.band();
+        char ex[64];
+        snprintf(ex, sizeof(ex), "\"band\":\"%s\",\"us\":%u",
+                 RcPwmInput::bandName(rcIn.band()), rcIn.widthUs());
+        logger.logEvent("rc_band", ex);
+    }
+
+    if (millis() - last_tlm_ms >= TELEMETRY_INTERVAL_MS) {
+        last_tlm_ms = millis();
+        Position p = posSource->read();
+        TelemetrySample s;
+        s.state       = st;
+        s.armed       = sm.isArmed();
+        s.gps_valid   = p.valid;
+        s.lat_deg     = p.lat_deg;
+        s.lon_deg     = p.lon_deg;
+        s.alt_m       = p.alt_m;
+        s.hdop        = p.hdop;
+        s.sats        = p.satellites;
+        s.rc_signal   = rcIn.hasSignal();
+        s.rc_us       = rcIn.widthUs();
+        s.rc_band     = RcPwmInput::bandName(rcIn.band());
+        s.rc_glitches = rcIn.glitchCount();
+        s.rc_hz       = rcIn.frameRateHz();
+        s.doors_a     = modA.doorsDropped();
+        s.doors_b     = modB.doorsDropped();
+        s.drop_idx    = engine ? engine->nextDropIndex() : 0;
+        s.limit_a     = (digitalRead(PIN_LIMIT_A) == LOW);
+        s.limit_b     = (digitalRead(PIN_LIMIT_B) == LOW);
+        logger.logTelemetry(s);
+    }
 
     // Mission complete notification
     if (engine && engine->missionComplete() && sm.isArmed()) {

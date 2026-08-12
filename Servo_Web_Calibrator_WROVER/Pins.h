@@ -80,20 +80,29 @@
 // 0 = flight build. Real servo PWM on GPIO 12/13.
 #define SIM_MODE 1
 
-// Drop announce LED (sim only). GPIO 14: not a strapping pin (0/2/5/12/15
-// are), not on the WROVER flash/PSRAM bus (9-11). Caveat: the boot ROM
-// emits a brief PWM burst on GPIO 14, so a flicker at power-on before
-// checkpoint [1] prints is EXPECTED, not a fault. Also JTAG MTMS — only
-// matters if a hardware debugger is ever attached to this board.
-#define PIN_SIM_LED_A 14   // red/any, 330R to GND
+// Drop announce LED. Lit for exactly the window the servo is (or would be)
+// driven, then blips out which door just dropped.
+//
+// ACTIVE IN BOTH SIM AND FLIGHT BUILDS. In SIM it is the only output; in a
+// flight build it runs alongside the real servo PWM. That makes the LED
+// behaviour identical in both, so what you validate on the bench is what
+// you see on the aircraft — and it gives a visible drop confirmation during
+// ground checks without needing the dashboard.
+//
+// GPIO 14: not a strapping pin (0/2/5/12/15 are), not on the WROVER
+// flash/PSRAM bus (9-11). Caveat: the boot ROM emits a brief PWM burst on
+// GPIO 14, so a flicker at power-on before checkpoint [1] prints is
+// EXPECTED, not a fault. Also JTAG MTMS — only matters if a hardware
+// debugger is ever attached to this board.
+#define PIN_DROP_LED  14   // 330R to GND
 
 // Confirm-flash patterns after a drop completes — how the two modules are
 // told apart on a single shared LED. Non-blocking (millis-driven).
-#define SIM_FLASH_LEAD_MS   200   // dark gap between drive window and confirm
-#define SIM_FLASH_A_ON_MS    80   // Module A: short blips
-#define SIM_FLASH_A_OFF_MS  120
-#define SIM_FLASH_B_ON_MS   400   // Module B: long blips
-#define SIM_FLASH_B_OFF_MS  200
+#define DROP_FLASH_LEAD_MS   200   // dark gap between drive window and confirm
+#define DROP_FLASH_A_ON_MS    80   // Module A: short blips
+#define DROP_FLASH_A_OFF_MS  120
+#define DROP_FLASH_B_ON_MS   400   // Module B: long blips
+#define DROP_FLASH_B_OFF_MS  200
 
 // No external ARM button wired — only the board's onboard EN/RST and
 // BOOT/IO0 buttons exist. GPIO0 is the BOOT button; holding it 2s after

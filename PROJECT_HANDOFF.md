@@ -62,7 +62,8 @@ This is a legitimate environmental/academic project (mangrove reforestation).
 - Limit switch A -> GPIO 32 (INPUT_PULLUP, active LOW, COM->GND, NO->GPIO)
 - Limit switch B -> GPIO 33
 - State LED      -> GPIO 22 (blink cadence per state)
-- SIM announce LED -> GPIO 14 (drop announcer, SIM builds only — 330R to GND)
+- Drop announce LED -> GPIO 14 (lit while the servo is/would be driven, then
+  blips the door number. ACTIVE IN BOTH SIM AND FLIGHT BUILDS — 330R to GND)
 - Yellow WAIT LED  -> GPIO 27 (steady = ARMED and waiting — 330R to GND)
 - RC pilot trigger -> GPIO 35 (input-only, NEEDS external 10k pull-down)
 - GNSS RX/TX     -> GPIO 4 / 5
