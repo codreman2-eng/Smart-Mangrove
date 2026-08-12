@@ -3,3 +3,10 @@
 
 # Arduino IDE / arduino-cli build cache (if ever generated in-repo)
 build/
+
+# Python
+__pycache__/
+*.pyc
+
+# OSDK raw captures
+*.bin
