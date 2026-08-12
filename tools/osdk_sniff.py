@@ -19,12 +19,13 @@ DESIGN NOTE — WHY CRC IS NOT THE SYNC MECHANISM
   you are almost certainly looking at real framing. That test needs no
   knowledge of DJI's CRC polynomials or seeds.
 
-  CRC checking is included but is a DIAGNOSTIC, never a gate. The seeds
-  below are the commonly cited OSDK values but are NOT verified against this
-  aircraft — so the tool reports a pass RATE and lets you confirm them
-  empirically, rather than silently discarding frames because a constant
-  this script assumed turned out to be wrong. Override with --crc16-init /
-  --crc32-init if the rate comes back at zero.
+  CRC checking is a DIAGNOSTIC, never a gate — and that decision paid off
+  immediately. The first run against a real A3 found 601/601 frames with
+  zero resyncs while scoring 0% on CRC, because the assumed polynomial was
+  wrong. Had CRC gated acceptance, a perfectly healthy link would have
+  reported as dead. The constants have since been recovered FROM that
+  capture and now validate 601/601; --crc16-init / --crc32-init remain for
+  any future firmware that changes them.
 
 WIRING (listen-only for this tool)
     A3 API TX  ->  adapter RX
@@ -53,28 +54,36 @@ except ImportError:
     sys.exit("pyserial not installed:  pip install pyserial")
 
 
-# ─── CRC — UNVERIFIED SEEDS, see the design note above ──────────────────
+# ─── CRC — VERIFIED against a live A3 Pro capture, 2026-08-12 ───────────
+# Recovered from 601 real broadcast frames, not from documentation:
+#   CRC16 seed brute-forced over the 16-bit space per candidate polynomial.
+#   CRC32 seed solved algebraically (CRC is linear over GF(2), so the init
+#   is recoverable from a single known frame rather than searched).
+# Both validate 601/601 frames. The earlier guess had the right seed for
+# CRC16 but the wrong POLYNOMIAL (0x8408 reflected-CCITT rather than 0xA001
+# reflected-IBM), and the wrong seed for CRC32 — which is precisely why the
+# sniffer was built to sync without needing either.
+CRC16_POLY = 0xA001          # reflected CRC-16/IBM (not CCITT)
+CRC32_POLY = 0xEDB88320      # reflected CRC-32
 CRC16_INIT_DEFAULT = 0x3AA3
-CRC32_INIT_DEFAULT = 0x3AA3AA3A
+CRC32_INIT_DEFAULT = 0x00003AA3   # NOT 0x3AA3AA3A
 
 
 def crc16(data: bytes, init: int) -> int:
-    """Reflected CCITT (poly 0x8408), DJI seed."""
     crc = init
     for b in data:
         crc ^= b
         for _ in range(8):
-            crc = (crc >> 1) ^ 0x8408 if crc & 1 else crc >> 1
+            crc = (crc >> 1) ^ CRC16_POLY if crc & 1 else crc >> 1
     return crc & 0xFFFF
 
 
 def crc32(data: bytes, init: int) -> int:
-    """Reflected CRC-32 (poly 0xEDB88320), DJI seed."""
     crc = init
     for b in data:
         crc ^= b
         for _ in range(8):
-            crc = (crc >> 1) ^ 0xEDB88320 if crc & 1 else crc >> 1
+            crc = (crc >> 1) ^ CRC32_POLY if crc & 1 else crc >> 1
     return crc & 0xFFFFFFFF
 
 
