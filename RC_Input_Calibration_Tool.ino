@@ -227,7 +227,12 @@ void loop() {
     static uint32_t last_print = 0;
     if (now - last_print >= 200) {
         last_print = now;
-        bool live = (now - last_ok_ms) < 500;
+        // `frames > 0` is load-bearing, not belt-and-braces: last_ok_ms is
+        // seeded in setup(), so without it the first 500ms after boot pass
+        // the freshness check with width_us still 0 — which classifies as
+        // "SAFE" and shows a reassuring 0us/SAFE readout when in fact
+        // nothing has ever been received. Wrong impression, wrong direction.
+        bool live = (frames > 0) && ((now - last_ok_ms) < 500);
         if (!live) {
             Serial.printf("  NO SIGNAL   (last valid %lums ago, glitches %lu)   "
                           "check wiring / common ground / voltage\n",
