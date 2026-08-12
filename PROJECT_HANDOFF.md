@@ -13,6 +13,12 @@ Core principle: the launcher does ALL drop logic onboard. The host drone only pr
 and flies a waypoint mission. No DJI OSDK/PSDK. Works on DJI M600 or DIY ArduPilot drones by
 changing config only.
 
+Why the launcher runs on its own MCU instead of on the Cube Orange+ flight controller (fault
+isolation, host-platform independence, bench testing without arming an aircraft, field
+calibration over Wi-Fi): see **`DESIGN_RATIONALE.md`**. That document is the reference answer
+for this question — it is argued from the real defects logged below, so keep it in sync if new
+incidents change the picture.
+
 The user is comfortable with C++/Arduino, Python, ROS, embedded work, and 3D printing.
 This is a legitimate environmental/academic project (mangrove reforestation).
 
@@ -552,6 +558,11 @@ whatever's left much faster next session.
   TELEM2 JST-GH 6pin: pin2 TX -> ESP32 GPIO16, pin3 RX -> ESP32 GPIO17, pin6 GND. 3.3V, no shifter.
 - The launcher is INDEPENDENT of the Cube. They only share nothing but the user may later
   feed MAVLink position. Default is onboard GNSS.
+- This independence is a deliberate architectural decision, not an accident of how the project
+  grew — full reasoning in `DESIGN_RATIONALE.md`. Key point for anyone extending this: the
+  launcher may CONSUME data from the Cube (e.g. the Phase 4 MAVLink position source above), but
+  it must never COMMAND through it and must never run code on it. Drop logic stays on the
+  launcher's own MCU.
 
 ---
 
