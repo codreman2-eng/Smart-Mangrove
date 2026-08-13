@@ -34,10 +34,19 @@ void Logger::_writeLine(const char* line) {
         return;
     }
 
-    File f = LittleFS.open(LOG_PATH, "a");
-    if (!f) { Serial.println("[LOG] Cannot open log file"); return; }
-    size_t n = f.println(line);
-    f.close();          // commit now — see the crash-safety note in Logger.h
+    // Handle held open, committed with flush(), rather than open/append/close
+    // per row. The close-every-time version cost 80-200ms once the file grew
+    // past a few hundred KB — LittleFS has to walk metadata on every open —
+    // and that stall lands inside loop(), so it became drop latency.
+    // flush() still calls lfs_file_sync(), so each row is committed to flash
+    // before the call returns; the crash-safety argument for closing was
+    // satisfied by flush() all along.
+    if (!_fh) {
+        _fh = LittleFS.open(LOG_PATH, "a");
+        if (!_fh) { Serial.println("[LOG] Cannot open log file"); return; }
+    }
+    size_t n = _fh.println(line);
+    _fh.flush();
     _bytes += n;
 }
 
@@ -104,55 +113,75 @@ void Logger::dumpLog() {
     Serial.println("==========================");
 }
 
-void Logger::streamToHttp(WebServer& server, bool events_only) {
+void Logger::streamToHttp(WebServer& server, bool events_only, uint32_t tail_bytes) {
+    if (_fh) _fh.flush();          // reader must see everything written so far
     File f = LittleFS.open(LOG_PATH, "r");
     if (!f) {
         server.send(200, "text/plain", "(no log file yet)");
         return;
     }
+
+    // Bound the read from the END. This handler runs inside loop(), so its
+    // cost is stolen directly from position updates and drop detection — and
+    // the previous version read the WHOLE file one byte at a time, which at
+    // 80KB was hundreds of milliseconds to over a second of stall, growing
+    // with every flight. Seeking to the tail makes the cost constant.
+    size_t sz = f.size();
+    size_t start = 0;
+    bool truncated = false;
+    if (tail_bytes && sz > tail_bytes) { start = sz - tail_bytes; truncated = true; }
+
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "text/plain", "");
 
-    if (!events_only) {
-        char buf[256];
-        size_t n;
-        while ((n = f.readBytes(buf, sizeof(buf))) > 0) server.sendContent(buf, n);
-        f.close();
-        return;
+    f.seek(start);
+    if (truncated) {
+        while (f.available() && (char)f.read() != '\n') {}   // drop partial line
+        server.sendContent("... older entries omitted (fetch /log?tail=0 for all)\n");
     }
 
-    // Line-at-a-time so telemetry can be dropped without loading the file.
-    // Over-long lines are flushed rather than truncated silently — a
-    // half-line of JSON in a flight log is worse than an obviously long one.
-    char line[288];
+    // Block reads, and lines accumulated into one output buffer before being
+    // sent. Both matter: byte-at-a-time reads and per-line sendContent() are
+    // each an order of magnitude slower than doing it in chunks.
+    char   in[256];
+    char   line[288];
+    String out;
+    out.reserve(1200);
     uint16_t len = 0;
     uint16_t kept = 0;
-    while (f.available()) {
-        char c = (char)f.read();
-        if (c == '\n' || len >= sizeof(line) - 1) {
-            line[len] = '\0';
-            if (len && !strstr(line, "\"ev\":\"tlm\"")) {
-                server.sendContent(line);
-                server.sendContent("\n");
-                kept++;
+    size_t n;
+
+    while ((n = f.readBytes(in, sizeof(in))) > 0) {
+        for (size_t i = 0; i < n; i++) {
+            char c = in[i];
+            if (c == '\n' || len >= sizeof(line) - 1) {
+                line[len] = '\0';
+                // Over-long lines are flushed, not silently truncated — half
+                // a line of JSON in a flight log is worse than a long one.
+                if (len && (!events_only || !strstr(line, "\"ev\":\"tlm\""))) {
+                    out += line; out += '\n'; kept++;
+                    if (out.length() >= 1024) { server.sendContent(out); out = ""; }
+                }
+                len = 0;
+            } else if (c != '\r') {
+                line[len++] = c;
             }
-            len = 0;
-        } else if (c != '\r') {
-            line[len++] = c;
         }
     }
-    if (len) {                       // trailing line with no newline
+    if (len) {                                   // trailing line, no newline
         line[len] = '\0';
-        if (!strstr(line, "\"ev\":\"tlm\"")) { server.sendContent(line); kept++; }
+        if (!events_only || !strstr(line, "\"ev\":\"tlm\"")) { out += line; out += '\n'; kept++; }
     }
+    if (out.length()) server.sendContent(out);
     f.close();
     if (kept == 0) server.sendContent("(no events logged yet)\n");
 }
 
 void Logger::clearLog() {
+    if (_fh) _fh.close();          // must release the append handle first
     LittleFS.remove(LOG_PATH);
     _bytes = 0;
     _full  = false;
     Serial.println("[LOG] Log cleared");
-    logEvent("log_cleared");
+    logEvent("log_cleared");       // reopens the handle
 }

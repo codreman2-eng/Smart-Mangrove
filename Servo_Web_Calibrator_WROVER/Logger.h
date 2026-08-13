@@ -77,7 +77,14 @@ public:
     // at 1 row/second the two lines from a drop are buried under hundreds of
     // telemetry rows, and shipping the whole file to the browser just to
     // throw most of it away is wasteful over a WiFi AP.
-    void streamToHttp(WebServer& server, bool events_only = false);
+    //
+    // tail_bytes bounds the work: the file only grows, and this runs inside
+    // an HTTP handler, so an unbounded read means loop() stalls for longer
+    // every time the log gets bigger. 0 = whole file.
+    void streamToHttp(WebServer& server, bool events_only = false,
+                      uint32_t tail_bytes = TAIL_DEFAULT);
+
+    static const uint32_t TAIL_DEFAULT = 24576;   // ~25KB, bounded and quick
     void clearLog();
 
     uint32_t bytesUsed() const { return _bytes; }
@@ -92,6 +99,7 @@ private:
     bool     _ready = false;
     bool     _full  = false;
     uint32_t _bytes = 0;
+    File     _fh;                 // held open; flush() commits each row
     static const char* LOG_PATH;
 
     // Common open/append/close with the size guard applied

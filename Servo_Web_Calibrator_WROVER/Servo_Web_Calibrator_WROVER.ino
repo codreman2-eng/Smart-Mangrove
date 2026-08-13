@@ -142,7 +142,8 @@ static bool manualDropActive = false;
 // mission is 15-20 min, so there is comfortable headroom. Raising this to
 // 5 Hz would fill the budget in about 33 minutes; don't, without also
 // revisiting MAX_LOG_BYTES.
-#define TELEMETRY_INTERVAL_MS 1000
+#define TELEMETRY_INTERVAL_MS 1000    // armed / dropping
+#define TELEMETRY_IDLE_MS    10000    // idle heartbeat only
 static uint32_t last_tlm_ms   = 0;
 // Change-detection state, so events are logged once per transition rather
 // than every loop. Centralised here instead of sprinkled through the HTTP
@@ -150,6 +151,14 @@ static uint32_t last_tlm_ms   = 0;
 static uint8_t  last_state    = 255;
 static bool     last_rc_sig   = false;
 static uint8_t  last_rc_band  = 255;
+
+// Worst loop() iteration seen in the current reporting window. Every ms
+// spent in an HTTP handler is a ms in which position is not updated and the
+// drop radius is not evaluated — so this IS the drop-latency figure, and it
+// is measured rather than assumed. Reported on the dashboard and on serial.
+static uint32_t loop_max_us      = 0;
+static uint32_t loop_max_report  = 0;   // held for display between resets
+static uint32_t loop_report_ms   = 0;
 
 // ─── GPS fix stability tracking ────────────────────────────────────────
 static uint32_t gps_fix_start_ms = 0;
@@ -322,6 +331,7 @@ static const char HTML_MISSION[] =
 "<div class='sw-bar'><h2>LIMIT SWITCHES</h2><div class='sw-row'>"
 "<div class='sw'><div id='dotA' class='dot'></div>Module A (GPIO 32)</div>"
 "<div class='sw'><div id='dotB' class='dot'></div>Module B (GPIO 33)</div>"
+"<div class='sw'>worst loop <b id='loopMs' style='color:#e5e7eb'>--</b></div>"
 "<div class='up' id='up'>--</div></div></div>"
 "<div class='sw-bar'><h2>PILOT RC TRIGGER &nbsp;<span style='color:#374151'>M600 A3 F-channel &#183; GPIO 35</span></h2>"
 "<div class='sw-row'>"
@@ -630,6 +640,9 @@ static const char HTML3[] =
 "const sb=document.getElementById('stateBadge');"
 "sb.textContent=STATE_NAMES[j.state]||'?';sb.className='badge '+(STATE_CLASS[j.state]||'s-boot');"
 "document.getElementById('armedVal').textContent=j.armed?'yes':'no';"
+"window._armed=(j.state===2||j.state===3);"   // ARMED or DROPPING -> pause log polling
+"const lp=document.getElementById('loopMs');"
+"if(lp)lp.textContent=j.loopMax+' ms';"
 "document.getElementById('gpsVal').textContent=j.gpsValid?'valid':'no fix';"
 "document.getElementById('latlonVal').textContent=j.gpsValid?(j.lat.toFixed(6)+', '+j.lon.toFixed(6)):'--';"
 "document.getElementById('satsVal').textContent=j.gpsValid?(j.sats+' sats / hdop '+j.hdop.toFixed(1)):'--';"
@@ -646,7 +659,11 @@ static const char HTML3[] =
 "document.getElementById('wpSrc').textContent=j.posSrc+' | osdk '+j.osdkFr+'f '+j.osdkErr+'e';}"
 "}catch(e){}}"
 "setInterval(poll,350);"
-"setInterval(refreshLog,5000);"
+// The log fetch is the most expensive request the board serves, and it runs
+// inside the same loop() that updates position and evaluates the drop
+// radius. While armed, that latency lands directly on drop timing — so the
+// auto-refresh pauses and the Refresh button stays available.
+"setInterval(()=>{if(!window._armed)refreshLog();},5000);"
 "preview('A');preview('B');refreshLog();"
 "log('Connected - Mission Dashboard ready');"
 "</script></body></html>";
@@ -956,11 +973,14 @@ void handleMission() {
 }
 
 void handleLog() {
-    // /log        full file
-    // /log?ev=1   events only (drops, state changes, estop, rc) - the default
-    //             from the dashboard, because two drop rows among hundreds of
-    //             1 Hz telemetry rows are effectively invisible otherwise.
-    logger.streamToHttp(server, server.hasArg("ev"));
+    // /log         last ~25KB, all rows
+    // /log?ev=1    events only — the dashboard default, because two drop rows
+    //              among hundreds of 1 Hz telemetry rows are invisible
+    // /log?tail=0  whole file (slow on a big log — do this on the ground)
+    uint32_t tail = server.hasArg("tail")
+                  ? (uint32_t)server.arg("tail").toInt()
+                  : Logger::TAIL_DEFAULT;
+    logger.streamToHttp(server, server.hasArg("ev"), tail);
 }
 
 void handleClearLog() {
@@ -1014,6 +1034,7 @@ void handleStatus() {
     j += ",\"osdkFlag\":" + String(osdkSource.passFlag());
     j += ",\"osdkOk\":"  + String(osdkSource.hasFix() ? "true" : "false");
     j += ",\"posSrc\":\"" + String(realSource.onPrimary() ? "OSDK" : "GNSS") + "\"";
+    j += ",\"loopMax\":" + String(loop_max_report / 1000);   // ms
 #if SIM_MODE
     j += ",\"sim\":true";
 #else
@@ -1114,6 +1135,7 @@ void setup() {
 
 // ─── Loop ────────────────────────────────────────────────────────────
 void loop() {
+    uint32_t loop_t0 = micros();
     server.handleClient();
 
     // Drain the position source EVERY iteration. DropLogicEngine only calls
@@ -1200,7 +1222,13 @@ void loop() {
         logger.logEvent("rc_band", ex);
     }
 
-    if (millis() - last_tlm_ms >= TELEMETRY_INTERVAL_MS) {
+    // 1 Hz while armed or dropping — that is the flight data worth having.
+    // Idle drops to 1/10 Hz: a bench session left running for hours is what
+    // grew the log to 715KB, and none of those rows describe anything. Events
+    // are always logged at full fidelity regardless of state.
+    bool active = sm.isArmed() || sm.isDropping();
+    uint32_t tlm_interval = active ? TELEMETRY_INTERVAL_MS : TELEMETRY_IDLE_MS;
+    if (millis() - last_tlm_ms >= tlm_interval) {
         last_tlm_ms = millis();
         Position p = posSource->read();
         TelemetrySample s;
@@ -1229,5 +1257,22 @@ void loop() {
     if (engine && engine->missionComplete() && sm.isArmed()) {
         Serial.println("[MAIN] *** MISSION COMPLETE — all drops done ***");
         sm.requestDisarm();
+    }
+
+    // ── Loop timing ───────────────────────────────────────────────────
+    // Must be last. The worst iteration in each window IS the drop-latency
+    // figure: while loop() is stalled, position is not read and the radius
+    // is not evaluated. A healthy idle loop is well under 1ms; anything in
+    // the hundreds means an HTTP handler is doing too much work.
+    uint32_t loop_dt = micros() - loop_t0;
+    if (loop_dt > loop_max_us) loop_max_us = loop_dt;
+    uint32_t now_ms = millis();
+    if (now_ms - loop_report_ms >= 5000) {
+        loop_report_ms  = now_ms;
+        loop_max_report = loop_max_us;
+        if (loop_max_us > 50000)
+            Serial.printf("[PERF] worst loop %lu ms in the last 5s - that is "
+                          "added drop latency\n", (unsigned long)(loop_max_us / 1000));
+        loop_max_us = 0;
     }
 }
