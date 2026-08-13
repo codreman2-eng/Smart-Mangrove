@@ -66,6 +66,8 @@ private:
     uint32_t _last_fix_ms = 0;
     uint16_t _last_flag   = 0;
     uint32_t _frames = 0, _crc_err = 0, _resyncs = 0;
+    uint8_t  _last_health   = 0;   // reported even when the fix gate rejects
+    uint32_t _last_report_ms = 0;
 
     // One max-size frame. The length field is 10 bits, so 1023 is the
     // hard ceiling and no allocation can grow past it.

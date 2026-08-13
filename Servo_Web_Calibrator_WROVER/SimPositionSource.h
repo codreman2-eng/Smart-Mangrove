@@ -21,6 +21,12 @@ public:
     void begin() override {
         Serial.println("[SIMPOS] Fake position source active — no fix until "
                        "injected via /simpos?lat=..&lon=..");
+        // MUST forward. Every other method delegates to the fallback, and
+        // begin() originally did not — so UART2 was never initialised and
+        // the OSDK link never received a byte, while the boot log still
+        // looked healthy. The missing [OSDK]/[GNSS] init lines were the only
+        // symptom. If a method is added to this class, delegate it here too.
+        if (_real) _real->begin();
     }
 
     // Falls through to a real source until a position is injected. That is

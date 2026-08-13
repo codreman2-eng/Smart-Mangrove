@@ -72,6 +72,24 @@ void OsdkPositionSource::update() {
         else               _len = 0;          // desynced beyond recovery
     }
     _consume();
+
+    // Periodic health line. Field diagnosis needs to separate "nothing on the
+    // wire" from "frames arriving but no fix" from "fix but stale", and those
+    // are indistinguishable from the LEDs or from a browser that may not be
+    // in range. Serial is the one channel always available on the bench.
+    uint32_t now = millis();
+    if (now - _last_report_ms >= 5000) {
+        _last_report_ms = now;
+        Serial.printf("[OSDK] frames=%lu crcErr=%lu resync=%lu flag=0x%04X "
+                      "lat=%.7f lon=%.7f health=%u fix=%s\n",
+                      (unsigned long)_frames, (unsigned long)_crc_err,
+                      (unsigned long)_resyncs, _last_flag,
+                      _last.lat_deg, _last.lon_deg, _last_health,
+                      hasFix() ? "YES" : "no");
+        if (_frames == 0)
+            Serial.println("[OSDK] no frames at all - check GPIO25 wiring, "
+                           "common ground, and that the A3 is powered");
+    }
 }
 
 void OsdkPositionSource::_consume() {
@@ -129,6 +147,7 @@ bool OsdkPositionSource::_decode(const uint8_t* p, uint16_t n) {
     memcpy(&alt,    p + off + 16, 4);
     memcpy(&height, p + off + 20, 4);
     uint8_t health = p[off + 24];
+    _last_health     = health;     // kept for the health line even if gated out
 
     _last.alt_m      = alt;
     _last.satellites = 0;              // sat count lives in the GPS field
