@@ -104,7 +104,7 @@ void Logger::dumpLog() {
     Serial.println("==========================");
 }
 
-void Logger::streamToHttp(WebServer& server) {
+void Logger::streamToHttp(WebServer& server, bool events_only) {
     File f = LittleFS.open(LOG_PATH, "r");
     if (!f) {
         server.send(200, "text/plain", "(no log file yet)");
@@ -113,12 +113,40 @@ void Logger::streamToHttp(WebServer& server) {
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "text/plain", "");
 
-    char buf[256];
-    size_t n;
-    while ((n = f.readBytes(buf, sizeof(buf))) > 0) {
-        server.sendContent(buf, n);
+    if (!events_only) {
+        char buf[256];
+        size_t n;
+        while ((n = f.readBytes(buf, sizeof(buf))) > 0) server.sendContent(buf, n);
+        f.close();
+        return;
+    }
+
+    // Line-at-a-time so telemetry can be dropped without loading the file.
+    // Over-long lines are flushed rather than truncated silently — a
+    // half-line of JSON in a flight log is worse than an obviously long one.
+    char line[288];
+    uint16_t len = 0;
+    uint16_t kept = 0;
+    while (f.available()) {
+        char c = (char)f.read();
+        if (c == '\n' || len >= sizeof(line) - 1) {
+            line[len] = '\0';
+            if (len && !strstr(line, "\"ev\":\"tlm\"")) {
+                server.sendContent(line);
+                server.sendContent("\n");
+                kept++;
+            }
+            len = 0;
+        } else if (c != '\r') {
+            line[len++] = c;
+        }
+    }
+    if (len) {                       // trailing line with no newline
+        line[len] = '\0';
+        if (!strstr(line, "\"ev\":\"tlm\"")) { server.sendContent(line); kept++; }
     }
     f.close();
+    if (kept == 0) server.sendContent("(no events logged yet)\n");
 }
 
 void Logger::clearLog() {

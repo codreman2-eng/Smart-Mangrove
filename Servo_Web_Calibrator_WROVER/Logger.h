@@ -72,7 +72,12 @@ public:
     void log(const char* tag, const char* msg);
 
     void dumpLog();
-    void streamToHttp(WebServer& server);
+
+    // events_only skips the 1 Hz "tlm" rows. Filtering SERVER-side matters:
+    // at 1 row/second the two lines from a drop are buried under hundreds of
+    // telemetry rows, and shipping the whole file to the browser just to
+    // throw most of it away is wasteful over a WiFi AP.
+    void streamToHttp(WebServer& server, bool events_only = false);
     void clearLog();
 
     uint32_t bytesUsed() const { return _bytes; }

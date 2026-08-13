@@ -333,6 +333,9 @@ static const char HTML_MISSION[] =
 "Supplements GPS &#8212; fires a balanced A&#8594;B pair without consuming a waypoint. "
 "Cannot arm: the dashboard must arm first.</div></div>"
 "<div class='log'><h2>FLIGHT LOG <button class='b-danger' style='width:auto;padding:4px 10px;font-size:.65rem;float:right' onclick='clearLogTap()'>Clear</button></h2>"
+"<label style='font-size:.66rem;color:#6b7280;display:flex;align-items:center;gap:5px;margin-bottom:6px'>"
+"<input type='checkbox' id='logEv' checked onchange='refreshLog()'> Events only "
+"(hide the 1&nbsp;Hz telemetry rows &#8212; drops are invisible without this)</label>"
 "<pre id='flightLog' style='font-size:.68rem;color:#a3e635;white-space:pre-wrap'>(not loaded — tap Refresh)</pre>"
 "<button class='b-t' onclick='refreshLog()'>Refresh Log</button></div>"
 "</div>";
@@ -528,8 +531,15 @@ static const char HTML3[] =
 "setTimeout(()=>{clearConfirming=false;},5000);return;}"
 "clearConfirming=false;doFetch('/clearlog').then(()=>refreshLog());}"
 "async function refreshLog(){"
-"try{const r=await fetch('/log');const t=await r.text();"
-"document.getElementById('flightLog').textContent=t;}catch(e){}}"
+"try{const ev=document.getElementById('logEv');"
+"const r=await fetch('/log'+((!ev||ev.checked)?'?ev=1':''));"
+"const t=await r.text();"
+"const el=document.getElementById('flightLog');"
+"el.textContent=t||'(empty)';"
+// Newest rows are appended, so without this the box shows the oldest lines
+// and a drop that just happened sits off-screen below.
+"el.parentElement.scrollTop=el.parentElement.scrollHeight;"
+"}catch(e){}}"
 // --- RC pilot trigger calibration ---
 "let rcSeen={min:0,max:0};"
 "function rcSweep(){doFetch('/rccal?reset=1').then(r=>{if(r&&r.ok)log('RC sweep reset - move the switch through all positions','#60a5fa');});}"
@@ -946,7 +956,11 @@ void handleMission() {
 }
 
 void handleLog() {
-    logger.streamToHttp(server);
+    // /log        full file
+    // /log?ev=1   events only (drops, state changes, estop, rc) - the default
+    //             from the dashboard, because two drop rows among hundreds of
+    //             1 Hz telemetry rows are effectively invisible otherwise.
+    logger.streamToHttp(server, server.hasArg("ev"));
 }
 
 void handleClearLog() {
