@@ -68,7 +68,21 @@ void DropLogicEngine::update() {
     float dist = haversineDistance(cur.lat_deg, cur.lon_deg,
                                    dp.lat_deg,  dp.lon_deg);
 
-    Serial.printf("[DLE] WP%d dist=%.1fm (r=%.1fm)\n", dp.id, dist, dp.radius_m);
+    // Rate-limited to 1Hz. This ran on EVERY loop iteration while armed —
+    // ~30 characters at 115200 baud is ~2.6ms of blocking, thousands of
+    // times per second, and Serial.printf() stalls once the TX buffer
+    // fills. The distance readout was itself the largest source of drop
+    // latency, and it only appeared while ARMED, which is precisely when
+    // the lag was observed. Also emitted when the distance changes by more
+    // than a metre, so an approach is still visible in real time.
+    static uint32_t last_dist_ms  = 0;
+    static float    last_dist_m   = -1.0f;
+    uint32_t now_ms = millis();
+    if (now_ms - last_dist_ms >= 1000 || fabsf(dist - last_dist_m) > 1.0f) {
+        last_dist_ms = now_ms;
+        last_dist_m  = dist;
+        Serial.printf("[DLE] WP%d dist=%.1fm (r=%.1fm)\n", dp.id, dist, dp.radius_m);
+    }
 
     if (dist <= dp.radius_m) {
         Serial.printf("[DLE] >>> In radius for WP%d — executing drop\n", dp.id);

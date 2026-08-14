@@ -1044,6 +1044,78 @@ void handleStatus() {
     server.send(200, "application/json", j);
 }
 
+// ─── Serial commands ───────────────────────────────────────────────────
+// The Phase 2 firmware had these; the dashboard replaced them with HTTP and
+// lost them. That was a mistake: the browser needs the SmartLauncher AP,
+// which means no internet and no second device, and it is useless when the
+// board is on a bench tethered to a laptop. Serial always works.
+//
+// Deliberately no servo-moving commands here. Motion stays behind the
+// dashboard's two-tap confirm.
+static void handleSerialLine(String s) {
+    s.trim();
+    if (!s.length()) return;
+    int sp = s.indexOf(' ');
+    String cmd = (sp < 0) ? s : s.substring(0, sp);
+    String rest = (sp < 0) ? "" : s.substring(sp + 1);
+    cmd.toLowerCase();
+
+    if (cmd == "help" || cmd == "?") {
+        Serial.println(F("commands: status | clearlog | arm | disarm | stop | wp"
+                         " | simpos <lat> <lon> | simclear"));
+        return;
+    }
+    if (cmd == "status") {
+        Position p = posSource->read();
+        const MissionConfig& mc = cfg.config();
+        Serial.printf("state=%d armed=%d dropping=%d\n",
+                      (int)sm.state(), sm.isArmed(), sm.isDropping());
+        Serial.printf("pos valid=%d %.7f, %.7f alt=%.1f src=%s\n",
+                      p.valid, p.lat_deg, p.lon_deg, p.alt_m,
+                      realSource.onPrimary() ? "OSDK" : "GNSS");
+        Serial.printf("osdk frames=%lu crcErr=%lu health-fix=%d\n",
+                      (unsigned long)osdkSource.frames(),
+                      (unsigned long)osdkSource.crcErrors(), osdkSource.hasFix());
+        Serial.printf("doorsA=%d doorsB=%d dropIdx=%d of %d\n",
+                      modA.doorsDropped(), modB.doorsDropped(),
+                      engine ? engine->nextDropIndex() : 0, mc.drop_count);
+        Serial.printf("log=%lu bytes%s  worstLoop=%lu ms\n",
+                      (unsigned long)logger.bytesUsed(),
+                      logger.isFull() ? " (FULL)" : "",
+                      (unsigned long)(loop_max_report / 1000));
+        return;
+    }
+    if (cmd == "clearlog") { logger.clearLog(); return; }
+    if (cmd == "arm")      { sm.requestArm();    return; }
+    if (cmd == "disarm")   { sm.requestDisarm(); return; }
+    if (cmd == "stop") {
+        modA.stop(); modB.stop();
+        calRunningA = calRunningB = false; calTimedActive = false;
+        sm.requestDisarm();
+        logger.logEvent("estop");
+        Serial.println(F("[CMD] *** EMERGENCY STOP ***"));
+        return;
+    }
+    if (cmd == "wp") {
+        const MissionConfig& mc = cfg.config();
+        Serial.printf("%d waypoints\n", mc.drop_count);
+        for (uint8_t i = 0; i < mc.drop_count; i++)
+            Serial.printf("  [%d] %.7f, %.7f r=%.1fm\n", mc.drops[i].id,
+                          mc.drops[i].lat_deg, mc.drops[i].lon_deg, mc.drops[i].radius_m);
+        return;
+    }
+#if SIM_MODE
+    if (cmd == "simpos") {
+        int c = rest.indexOf(' ');
+        if (c < 0) { Serial.println(F("usage: simpos <lat> <lon>")); return; }
+        simSource.inject(rest.substring(0, c).toDouble(), rest.substring(c + 1).toDouble());
+        return;
+    }
+    if (cmd == "simclear") { simSource.clear(); return; }
+#endif
+    Serial.printf("unknown '%s' - try 'help'\n", cmd.c_str());
+}
+
 // ─── Setup — numbered checkpoints so a crash location is visible ──────
 void setup() {
     Serial.begin(115200);
@@ -1137,6 +1209,14 @@ void setup() {
 void loop() {
     uint32_t loop_t0 = micros();
     server.handleClient();
+
+    // Serial commands (non-blocking, one char at a time)
+    static String serialBuf;
+    while (Serial.available()) {
+        char ch = Serial.read();
+        if (ch == '\n' || ch == '\r') { handleSerialLine(serialBuf); serialBuf = ""; }
+        else if (serialBuf.length() < 64) serialBuf += ch;
+    }
 
     // Drain the position source EVERY iteration. DropLogicEngine only calls
     // update() on its armed-and-idle path, which is nowhere near often

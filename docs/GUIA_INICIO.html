@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Smart Launcher — Guía de Inicio</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 16mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 10.5pt; line-height: 1.55; color: #1a1a1a; margin: 0;
+  }
+  h1 { font-size: 20pt; color: #14532d; margin: 0 0 4pt; letter-spacing: -.3pt; }
+  h2 {
+    font-size: 13pt; color: #14532d; margin: 20pt 0 8pt;
+    padding-bottom: 3pt; border-bottom: 1.5pt solid #86efac;
+    page-break-after: avoid;
+  }
+  h3 { font-size: 11pt; color: #166534; margin: 13pt 0 5pt; page-break-after: avoid; }
+  p, li { orphans: 3; widows: 3; }
+  ul, ol { margin: 5pt 0 5pt 0; padding-left: 18pt; }
+  li { margin-bottom: 3pt; }
+  code {
+    font-family: "Consolas", "Courier New", monospace; font-size: 9pt;
+    background: #f1f5f9; padding: 1pt 3pt; border-radius: 2pt; color: #0f172a;
+  }
+  pre {
+    font-family: "Consolas", "Courier New", monospace; font-size: 8.5pt;
+    background: #0f172a; color: #e2e8f0; padding: 8pt 10pt; border-radius: 4pt;
+    line-height: 1.4; overflow-wrap: break-word; white-space: pre-wrap;
+    page-break-inside: avoid;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 7pt 0; font-size: 9.5pt;
+          page-break-inside: avoid; }
+  th { background: #14532d; color: #fff; text-align: left; padding: 5pt 7pt; font-weight: 600; }
+  td { padding: 4.5pt 7pt; border-bottom: .5pt solid #d1d5db; vertical-align: top; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .peligro, .aviso, .nota {
+    padding: 8pt 11pt; margin: 9pt 0; border-radius: 3pt; page-break-inside: avoid;
+  }
+  .peligro { background: #fef2f2; border-left: 4pt solid #dc2626; }
+  .peligro strong { color: #991b1b; }
+  .aviso { background: #fffbeb; border-left: 4pt solid #d97706; }
+  .aviso strong { color: #92400e; }
+  .nota { background: #eff6ff; border-left: 4pt solid #2563eb; }
+  .nota strong { color: #1e40af; }
+  .portada { text-align: center; padding-top: 55mm; page-break-after: always; }
+  .portada h1 { font-size: 30pt; border: none; }
+  .portada .sub { font-size: 13pt; color: #475569; margin-top: 6pt; }
+  .portada .meta { margin-top: 40mm; font-size: 10pt; color: #64748b; line-height: 1.9; }
+  .portada .aviso { text-align: left; max-width: 130mm; margin: 22mm auto 0; }
+  .salto { page-break-before: always; }
+  .pie { margin-top: 22pt; padding-top: 7pt; border-top: .5pt solid #cbd5e1;
+         font-size: 8.5pt; color: #64748b; }
+  .prohibido { color: #991b1b; font-weight: 600; }
+  .indice li { margin-bottom: 4pt; }
+</style>
+</head>
+<body>
+
+<div class="portada">
+  <h1>Smart Launcher</h1>
+  <div class="sub">Sistema de siembra aérea de propágulos de mangle</div>
+  <div class="sub" style="font-size:11pt;margin-top:14pt">Guía de Inicio para Nuevos Integrantes</div>
+  <div class="meta">
+    Versión del documento: 1.0<br>
+    Fecha: 13 de agosto de 2026<br>
+    Repositorio: <code>Smart-Mangrove</code> — rama <code>sim-mode-and-rc-trigger</code>
+  </div>
+  <div class="aviso">
+    <strong>Antes de conectar cualquier cosa:</strong> lea completa la Sección 1
+    (Seguridad). Este documento asume que usted no conoce el proyecto, pero sí
+    que trabajará con cuidado. El equipo puede dañarse de forma irreversible si
+    se omiten los pasos de seguridad.
+  </div>
+</div>
+
+<h1>Guía de Inicio</h1>
+<p style="color:#475569;margin-top:0">
+Este documento está dirigido a alguien que se incorpora al proyecto sin
+conocimiento previo. Para el historial completo y las razones detrás de cada
+decisión técnica, consulte <code>PROJECT_HANDOFF.md</code>; ese documento es
+denso y está escrito para alguien ya familiarizado. <strong>Lea primero esta
+guía.</strong>
+</p>
+
+<h3>Contenido</h3>
+<ol class="indice">
+  <li>Seguridad — leer antes de tocar nada</li>
+  <li>Qué es este proyecto</li>
+  <li>El hardware</li>
+  <li>Cableado existente</li>
+  <li>Preparación del computador</li>
+  <li>Identificar el puerto COM</li>
+  <li>Cargar el firmware</li>
+  <li>Uso del panel de control</li>
+  <li>Estado real del proyecto</li>
+  <li>Resolución de problemas</li>
+  <li>Qué hacer a continuación</li>
+  <li>Reglas y control de versiones</li>
+  <li>Glosario</li>
+</ol>
+
+<h2 class="salto">1. Seguridad — leer antes de tocar nada</h2>
+
+<p>Estas advertencias no son formalidades. Cada una corresponde a un incidente
+real ocurrido en este proyecto o a un riesgo comprobado.</p>
+
+<h3>1.1 El lanzador es una máquina que se mueve</h3>
+
+<div class="peligro">
+<strong>El firmware está actualmente en MODO SIMULACIÓN (SIM).</strong> Los
+servomotores están desconectados por software y, en su lugar, se enciende un
+LED. Ese es el estado seguro. <strong>No lo cambie</strong> salvo que haya
+alguien con experiencia acompañándolo.
+</div>
+
+<ul>
+  <li><strong>Mantenga desconectada la alimentación de los servos (el UBEC),</strong>
+      incluso en modo simulación.</li>
+  <li>La tapa de las semillas se desplaza <strong>en un solo sentido</strong>. Si
+      avanza, no regresa sin desarmar el mecanismo. Un error aquí cuesta trabajo real.</li>
+  <li>Ya ocurrió un incidente en el que un servo giró de forma continua y no se
+      detuvo; hubo que cortar la alimentación físicamente. Por eso se prueba con LEDs.</li>
+</ul>
+
+<h3>1.2 Reglas eléctricas</h3>
+<ul>
+  <li>El <strong>ESP32 funciona a 3.3 V y NO tolera 5 V</strong>. Conectar una señal
+      de 5 V directamente a cualquiera de sus pines puede destruirlo.</li>
+  <li>El Arduino Mega funciona a <strong>5 V</strong>. Toda señal que vaya del Mega
+      al ESP32 requiere un divisor de tensión (Sección 4).</li>
+  <li><strong>La tierra común (GND) es obligatoria.</strong> Dos placas que
+      intercambian una señal deben tener sus pines GND unidos. Sin tierra común la
+      señal no funciona, y la falla parece un error de software.</li>
+  <li>Nunca conecte dos salidas (dos pines TX) entre sí.</li>
+</ul>
+
+<h3>1.3 Reglas con la aeronave</h3>
+<div class="peligro">
+<strong>Hélices desmontadas siempre</strong> que el M600 esté energizado en
+mesa de trabajo. Sin excepciones. No vuele nada: ningún elemento de este
+proyecto está validado para vuelo.
+</div>
+
+<h2>2. Qué es este proyecto</h2>
+
+<p>Un dron siembra propágulos de mangle para reforestar manglares.</p>
+
+<p>El <strong>Smart Launcher</strong> es un módulo que se monta bajo el dron.
+Almacena semillas detrás de 5 compuertas deslizantes por módulo, y existen 2
+módulos (A y B) montados simétricamente para mantener el equilibrio de la
+aeronave.</p>
+
+<div class="nota">
+<strong>Idea central:</strong> el lanzador realiza toda su lógica de forma
+autónoma. Tiene su propio microcontrolador, su propio GPS y su propia
+configuración. El dron únicamente vuela y suministra energía. Gracias a esto,
+el mismo lanzador funciona en un DJI M600 o en un dron de construcción propia
+cambiando un archivo de configuración, no el programa.
+</div>
+
+<p>Cuando el lanzador determina que llegó a un punto de siembra, acciona un
+servomotor que desplaza la tapa el ancho de una compuerta (35 mm) y la semilla
+cae por gravedad. Primero dispara el Módulo A, espera confirmación, y luego el
+Módulo B. Ese orden mantiene equilibrada la aeronave.</p>
+
+<h3>2.1 Cómo sabe dónde está</h3>
+<table>
+  <tr><th style="width:22%">Fuente</th><th>Descripción</th></tr>
+  <tr><td><strong>OSDK</strong></td>
+      <td>Lee la posición directamente del controlador de vuelo del DJI M600 por
+          cable serie, 50 veces por segundo. Es la mejor opción y ya funciona.</td></tr>
+  <tr><td><strong>GNSS</strong></td>
+      <td>Módulo GPS propio (u-blox M8N). Respaldo automático.</td></tr>
+  <tr><td><strong>Simulada</strong></td>
+      <td>Posición ficticia introducida manualmente, para pruebas en interiores.</td></tr>
+</table>
+
+<h3>2.2 Cómo decide sembrar</h3>
+<ol>
+  <li><strong>Automático:</strong> se guarda una lista de coordenadas. Cuando el
+      lanzador entra en el radio configurado de una de ellas, siembra.</li>
+  <li><strong>Disparo del piloto:</strong> el piloto acciona un interruptor del
+      radiocontrol. Está implementado pero <em>nunca se ha probado de extremo a
+      extremo</em>.</li>
+</ol>
+
+<h2 class="salto">3. El hardware</h2>
+
+<table>
+  <tr><th style="width:26%">Elemento</th><th>Función</th><th style="width:26%">Ubicación</th></tr>
+  <tr><td><strong>ESP32 WROVER-E</strong></td><td>Cerebro del lanzador. Ejecuta todo.</td><td>Placa principal</td></tr>
+  <tr><td><strong>Arduino Mega 2560</strong></td><td>Herramienta de prueba: genera una señal de radiocontrol simulada.</td><td>Solo banco, nunca vuela</td></tr>
+  <tr><td><strong>Adaptador FTDI FT232</strong></td><td>Cable USB–serie para escuchar al DJI desde el PC.</td><td>Solo banco</td></tr>
+  <tr><td><strong>DJI M600 / A3 Pro</strong></td><td>Aeronave y su controlador de vuelo.</td><td>—</td></tr>
+  <tr><td><strong>Servos FS5106R</strong></td><td>Motores que desplazan las tapas.</td><td>Actualmente desconectados</td></tr>
+</table>
+
+<h3>3.1 Asignación de pines del ESP32</h3>
+<table>
+  <tr><th style="width:20%">Pin</th><th>Uso</th></tr>
+  <tr><td>GPIO 12</td><td>Señal del servo A</td></tr>
+  <tr><td>GPIO 13</td><td>Señal del servo B</td></tr>
+  <tr><td>GPIO 32</td><td>Fin de carrera A</td></tr>
+  <tr><td>GPIO 33</td><td>Fin de carrera B</td></tr>
+  <tr><td>GPIO 22</td><td>LED de estado (parpadea un patrón según el estado)</td></tr>
+  <tr><td>GPIO 27</td><td>LED amarillo de «en espera»</td></tr>
+  <tr><td>GPIO 14</td><td>LED de aviso de siembra</td></tr>
+  <tr><td>GPIO 35</td><td>Entrada del disparo del piloto (pin de solo entrada)</td></tr>
+  <tr><td>GPIO 25</td><td>Entrada serie del OSDK (DJI)</td></tr>
+  <tr><td>GPIO 26</td><td>Salida serie del OSDK (cableada, nunca utilizada)</td></tr>
+  <tr><td>GPIO 4 / 5</td><td>Módulo GPS</td></tr>
+</table>
+
+<div class="peligro">
+<strong class="prohibido">PINES QUE NUNCA DEBEN USARSE</strong><br><br>
+<strong>GPIO 2</strong> — la placa no arranca si se controla este pin. Costó una
+sesión completa de diagnóstico.<br>
+<strong>GPIO 9 y 10</strong> — están conectados físicamente al chip de memoria
+interno del módulo. Costó otra sesión.<br>
+<strong>GPIO 16 y 17</strong> — mismo problema, también conectados a la memoria.
+Se detectó antes de causar daño.<br><br>
+Si necesita un pin libre, use <strong>18, 19, 21 o 23</strong>. La lista
+autorizada, con las razones, está en
+<code>Servo_Web_Calibrator_WROVER/Pins.h</code>. Léala antes de cablear.
+</div>
+
+<h2>4. Cableado existente</h2>
+
+<h3>4.1 Los tres LEDs</h3>
+<p>Cada LED se conecta así: <code>pin del ESP32 → resistencia de 330 Ω → pata
+larga del LED (+) → pata corta (−) → GND</code>.</p>
+<table>
+  <tr><th style="width:26%">LED</th><th style="width:14%">Pin</th><th>Qué indica</th></tr>
+  <tr><td>Estado</td><td>22</td><td>El patrón de parpadeo indica el estado del sistema</td></tr>
+  <tr><td>Amarillo «espera»</td><td>27</td><td><strong>Encendido fijo</strong> = armado y esperando un punto de siembra</td></tr>
+  <tr><td>Aviso de siembra</td><td>14</td><td>Se enciende cuando se ejecuta una siembra</td></tr>
+</table>
+
+<h3>4.2 Cable OSDK del DJI (datos de posición)</h3>
+<pre>Puerto «API» del A3  TX   →  [330 Ω]  →  ESP32 GPIO 25
+Puerto «API» del A3  GND  →              ESP32 GND      ← obligatorio
+Puerto «API» del A3  RX / VCC            NO CONECTAR</pre>
+<p>Ambos lados trabajan a 3.3 V, por lo que no se requiere conversor.
+<strong>Este enlace es de solo recepción</strong>: el lanzador escucha, nunca
+envía órdenes a la aeronave. Es una regla de diseño deliberada, no una
+limitación.</p>
+
+<h3>4.3 Señal de prueba desde el Arduino Mega</h3>
+<p>El Mega trabaja a 5 V, por lo que <strong>requiere divisor de tensión</strong>:</p>
+<pre>Mega pin 11 ──[ 1 kΩ ]──┬────── ESP32 GPIO 35
+                        │
+                     [ 2 kΩ ]
+                        │
+Mega GND ───────────────┴────── ESP32 GND</pre>
+<div class="aviso">
+<strong>Use 1 kΩ / 2 kΩ. NO use 10 kΩ / 20 kΩ.</strong> El GPIO 35 ya tiene una
+resistencia de 10 kΩ, y la combinación reduce la tensión por debajo del umbral
+lógico. El síntoma es idéntico al de un cable roto.
+</div>
+
+<h2 class="salto">5. Preparación del computador</h2>
+
+<h3>5.1 Instalar el Arduino IDE</h3>
+<p>Versión 2.x. En el equipo del proyecto ya está instalado en
+<code>C:\Program Files\Arduino IDE\</code>.</p>
+
+<h3>5.2 Soporte para placas ESP32</h3>
+<p>En <code>Archivo → Preferencias → Gestor de URLs adicionales</code>, agregue:</p>
+<pre>https://espressif.github.io/arduino-esp32/package_esp32_index.json</pre>
+<p>Luego <code>Herramientas → Placa → Gestor de tarjetas</code>, busque
+<strong>esp32</strong> e instálelo. El equipo del proyecto usa la
+<strong>versión 3.3.8</strong>; utilice esa si es posible.</p>
+
+<h3>5.3 Configuración de la placa</h3>
+<table>
+  <tr><th style="width:38%">Opción</th><th>Valor</th></tr>
+  <tr><td>Placa</td><td><strong>ESP32 Wrover Module</strong></td></tr>
+  <tr><td>Upload Speed</td><td>921600</td></tr>
+  <tr><td>Flash Frequency</td><td>80 MHz</td></tr>
+  <tr><td>Partition Scheme</td><td>Default 4MB with spiffs</td></tr>
+</table>
+<div class="aviso">
+<strong>«ESP32 Wrover Module» no es opcional.</strong> Seleccionar «ESP32 Dev
+Module» configura mal el chip de memoria y la placa se reinicia continuamente.
+Ya ocurrió una vez.
+</div>
+
+<h3>5.4 Activar los avisos del compilador</h3>
+<p><code>Archivo → Preferencias → Advertencias del compilador → Por defecto</code>
+(o superior).</p>
+<p>El código contiene un aviso deliberado que aparece al compilar una versión
+<strong>de vuelo</strong>, recordando que hay tres errores conocidos sin
+resolver. Con la opción «Ninguna» ese aviso nunca se vería.</p>
+
+<h2>6. Identificar el puerto COM</h2>
+<div class="aviso">
+<strong>El número de puerto cambia.</strong> Desconectar y volver a conectar
+puede mover el ESP32 de COM6 a COM11 o a cualquier otro. Nunca lo dé por supuesto.
+</div>
+<ol>
+  <li>Conecte la placa.</li>
+  <li>Arduino IDE → <code>Herramientas → Puerto</code>. Anote lo que aparece.</li>
+  <li>Desconecte la placa y vuelva a mirar. El que desapareció es el suyo.</li>
+</ol>
+<p>Valores observados recientemente (<em>no confiar</em>): ESP32 en COM6,
+Arduino Mega en COM8, adaptador FTDI en COM11.</p>
+<div class="nota">
+<strong>Solo un programa puede usar un puerto a la vez.</strong> Si la carga
+falla con «Acceso denegado» o «puerto ocupado», casi con certeza el Monitor
+Serie sigue abierto. Ciérrelo y reintente. Esto nos ocurrió tres veces.
+</div>
+
+<h2 class="salto">7. Cargar el firmware</h2>
+
+<h3>7.1 Firmware principal (panel de control)</h3>
+<ol>
+  <li>Abra <code>Servo_Web_Calibrator_WROVER/Servo_Web_Calibrator_WROVER.ino</code></li>
+  <li>Verifique en <code>Pins.h</code> la línea <code>#define SIM_MODE</code> —
+      <strong>debe decir <code>1</code></strong></li>
+  <li>Configure placa y puerto (Secciones 5 y 6)</li>
+  <li>Pulse la flecha <strong>→</strong> (Subir)</li>
+  <li>Espere <code>Hash of data verified</code> y <code>Hard resetting</code></li>
+</ol>
+
+<h3>7.2 Verificar que funcionó</h3>
+<p>Abra el Monitor Serie a <strong>115200 baudios</strong> y pulse el botón
+<strong>EN/RST</strong> de la placa. Deben aparecer doce pasos numerados:</p>
+<pre>=== Smart Launcher Mission Dashboard ===
+[1] Config (LittleFS + mission.json...)
+[2] Logger
+[3] State machine (LED GPIO22...)
+[4] Position source (SIM — real OSDK/GNSS until /simpos injects)
+[5] Actuators *** SIM MODE — announce LED GPIO14,
+    servo GPIO12/13 NOT attached ***
+[6] Drop logic engine
+[6b] RC pilot trigger (GPIO35 ...)
+[7] WiFi AP
+[8] IP: 192.168.4.1
+[9] HTTP server
+[10] BOOT -> IDLE
+[11] Ready — connect to SmartLauncher -> http://192.168.4.1
+[12] setup() complete — loop starting</pre>
+
+<div class="nota">
+La línea <code>[5]</code> que dice <strong>«servo GPIO12/13 NOT attached»</strong>
+es la prueba de que el modo simulación está activo y nada puede moverse
+físicamente. Búsquela siempre.
+</div>
+<div class="peligro">
+Si aparece <code>rst:0x8 (TG1WDT_SYS_RESET)</code> repetidamente, la placa está
+en ciclo de reinicio. Deténgase y consulte la Sección 10.
+</div>
+
+<h3>7.3 Otros programas (herramientas de prueba)</h3>
+<table>
+  <tr><th style="width:42%">Archivo</th><th>Dónde se carga</th></tr>
+  <tr><td><code>RC_Input_Calibration_Tool.ino</code></td><td>ESP32 — mide una señal de radiocontrol</td></tr>
+  <tr><td><code>RC_Pulse_Generator_Mega2560.ino</code></td><td>Arduino Mega — genera una señal de prueba</td></tr>
+  <tr><td><code>tools/osdk_sniff.py</code></td><td>PC (Python + <code>pip install pyserial</code>)</td></tr>
+</table>
+
+<h2>8. Uso del panel de control</h2>
+<ol>
+  <li>Energice el ESP32.</li>
+  <li>Conéctese a la red Wi-Fi <strong><code>SmartLauncher</code></strong> (sin contraseña).</li>
+  <li>Abra <strong><code>http://192.168.4.1</code></strong></li>
+</ol>
+<p>Perderá el acceso a internet mientras esté conectado: es una red
+independiente generada por la placa.</p>
+
+<div class="aviso">
+Debe aparecer un recuadro naranja que dice <strong>SIM MODE — NO SERVO
+OUTPUT</strong>. Si ese aviso no está, el firmware puede accionar motores
+reales. Deténgase y verifique <code>SIM_MODE</code>.
+</div>
+
+<h3>8.1 Las tres pestañas</h3>
+<table>
+  <tr><th style="width:22%">Pestaña</th><th>Contenido</th></tr>
+  <tr><td><strong>Control</strong></td>
+      <td>Armar/desarmar, siembras manuales, parada de emergencia y registro de
+          vuelo. <em>ARM</em> requiere dos toques. La <strong>PARADA DE
+          EMERGENCIA</strong> es la barra roja inferior: un toque, siempre
+          disponible, sin confirmación. <em>worst loop</em> indica el ciclo más
+          lento del software; unos pocos ms es saludable.</td></tr>
+  <tr><td><strong>Waypoints</strong></td>
+      <td>Planificación de la misión. <strong>ADD WAYPOINT HERE</strong> captura
+          la posición actual con un solo toque; se rechaza si no hay señal GPS.
+          El radio define a qué distancia se activa la siembra:
+          <strong>use 10 m para pruebas</strong>. Los cambios solo se guardan al
+          pulsar <em>Save</em>.</td></tr>
+  <tr><td><strong>Calibration</strong></td>
+      <td>Ajuste de servos y del disparo por radiocontrol.
+          <strong>No use los controles de servo</strong> sin indicación expresa.</td></tr>
+</table>
+
+<h2 class="salto">9. Estado real del proyecto</h2>
+
+<h3>9.1 Comprobado en hardware real</h3>
+<ul>
+  <li>El panel de control funciona; las tres pestañas se muestran correctamente.</li>
+  <li>Lectura de posición desde el DJI M600 a ~47 actualizaciones por segundo,
+      verificada en exteriores con señal GPS real.</li>
+  <li>La lógica de siembra se activa correctamente al alcanzar un punto,
+      comprobado caminando hasta él y observando el LED.</li>
+  <li>El registro de vuelo guarda eventos en un archivo de la placa.</li>
+  <li>La herramienta de lectura de radiocontrol funciona contra un generador de señal.</li>
+</ul>
+
+<h3>9.2 Implementado pero NO comprobado</h3>
+<div class="aviso">
+<ul style="margin:0">
+  <li>El disparo por radiocontrol del piloto nunca se ha probado de extremo a extremo.</li>
+  <li><strong>Los servos nunca han sido accionados por este firmware. Ni una sola vez.</strong></li>
+  <li>El hardware del Módulo B todavía no existe.</li>
+  <li>Nada ha volado.</li>
+</ul>
+</div>
+
+<h3>9.3 Tres errores conocidos permanecen en el código A PROPÓSITO</h3>
+<p>Fueron detectados leyendo el código pero nunca confirmados en ejecución. Se
+dejaron deliberadamente para que la próxima prueba los confirme o los descarte,
+en lugar de que alguien «corrija» un problema que quizá no exista.</p>
+<ol>
+  <li><strong>La parada de emergencia podría accionar el Módulo B.</strong> Al
+      pulsar parada durante una secuencia automática, el módulo B podría iniciarse igualmente.</li>
+  <li><strong>La parada de emergencia podría no desarmar.</strong> Podría dejar el
+      sistema en estado ARMADO.</li>
+  <li><strong>10 puntos frente a 5 compuertas.</strong> Si la misión tiene más
+      puntos que compuertas, los sobrantes se registran como exitosos sin que ocurra nada.</li>
+</ol>
+<div class="peligro">
+<strong>No conecte los servos hasta que estos tres puntos estén resueltos.</strong>
+La pestaña <em>Waypoints</em> advierte automáticamente sobre el punto 3.
+</div>
+
+<h2>10. Resolución de problemas</h2>
+<table>
+  <tr><th style="width:34%">Síntoma</th><th>Causa y solución</th></tr>
+  <tr><td>La carga falla: «Acceso denegado» / puerto ocupado</td>
+      <td>El Monitor Serie está abierto. Ciérrelo.</td></tr>
+  <tr><td>La carga falla: puerto no encontrado</td>
+      <td>El número de puerto cambió. Revise <code>Herramientas → Puerto</code>.</td></tr>
+  <tr><td><code>rst:0x8</code> en bucle</td>
+      <td>Placa incorrecta seleccionada, o algo conectado a GPIO 2 / 9 / 10 / 16 / 17.</td></tr>
+  <tr><td>El monitor muestra caracteres extraños</td>
+      <td>Velocidad incorrecta. Configure 115200 baudios.</td></tr>
+  <tr><td>El panel no carga</td>
+      <td>¿Está conectado a la red <code>SmartLauncher</code>? La dirección es
+          <code>192.168.4.1</code>, sin https.</td></tr>
+  <tr><td>«no fix» en exteriores</td>
+      <td>Revise las líneas <code>[OSDK]</code> del monitor serie.
+          <code>frames=0</code> indica cable incorrecto o A3 apagado. Si hay
+          frames pero <code>health</code> menor a 3, la aeronave aún no fija
+          satélites: espere un minuto.</td></tr>
+  <tr><td>No se ejecuta la siembra</td>
+      <td>¿Está ARMADO? ¿Hay un punto guardado? ¿El radio es suficiente? ¿El punto
+          está realmente cerca?</td></tr>
+  <tr><td>No aparecen siembras en el registro</td>
+      <td>Active «Events only». La telemetría escribe una línea por segundo y las oculta.</td></tr>
+  <tr><td>Todo responde con lentitud</td>
+      <td>Revise <em>worst loop</em>. Si es alto, probablemente el registro esté
+          lleno: bórrelo desde la pestaña Control.</td></tr>
+</table>
+
+<h3>10.1 Lectura de los LEDs</h3>
+<table>
+  <tr><th style="width:26%">Amarillo (27)</th><th style="width:30%">Aviso (14)</th><th>Significado</th></tr>
+  <tr><td>parpadeo lento</td><td>apagado</td><td>Inactivo, sin armar</td></tr>
+  <tr><td><strong>fijo</strong></td><td>apagado</td><td>Armado, esperando</td></tr>
+  <tr><td>apagado</td><td><strong>encendido ~0.6 s</strong></td><td>Módulo A ejecutando</td></tr>
+  <tr><td>apagado</td><td>1 destello corto</td><td>Compuerta del Módulo A confirmada</td></tr>
+  <tr><td>apagado</td><td><strong>encendido ~0.35 s</strong></td><td>Módulo B ejecutando</td></tr>
+  <tr><td>apagado</td><td>1 destello largo</td><td>Compuerta del Módulo B confirmada</td></tr>
+  <tr><td>parpadeo rápido</td><td>apagado</td><td>Fallo</td></tr>
+</table>
+<p>Destellos cortos = Módulo A; destellos largos = Módulo B. Así se distinguen
+con un solo LED.</p>
+
+<h2 class="salto">11. Qué hacer a continuación</h2>
+<p>En este orden. No salte pasos.</p>
+<ol>
+  <li><strong>Verifique el registro de vuelo</strong> y bórrelo si está lleno
+      (pestaña Control → Clear, dos toques).</li>
+  <li><strong>Repita la prueba caminando</strong> y observe si persiste la
+      lentitud al sembrar. Vigile <em>worst loop</em>.</li>
+  <li><strong>Ejecute las pruebas de parada de emergencia.</strong> Arme, provoque
+      una siembra y pulse PARADA DE EMERGENCIA mientras el LED de aviso está encendido.
+      <ul>
+        <li>Si el LED vuelve a encenderse → el error 1 es real. Anótelo.</li>
+        <li>Si el estado permanece ARMADO → el error 2 es real. Anótelo.</li>
+      </ul></li>
+  <li><strong>Registre los resultados en <code>SIM_MODE_VALIDATION_PLAN.md</code></strong>,
+      que contiene una tabla con celdas en blanco esperando exactamente estos datos.</li>
+</ol>
+<div class="nota">
+<code>SIM_MODE_VALIDATION_PLAN.md</code> es el guion de pruebas: 20 pasos
+numerados con un criterio de aprobación cada uno. <strong>En algunos pasos, que
+la siembra se ejecute significa FALLO</strong> — son los que verifican que algo
+<em>no</em> debe ocurrir. Lea el criterio, no lo suponga.
+</div>
+
+<h3>11.1 Observación pendiente sobre el tiempo de respuesta</h3>
+<p>Se identificó y corrigió una causa importante de lentitud: un mensaje de
+diagnóstico que se imprimía por el puerto serie en cada ciclo del programa
+mientras el sistema estaba armado. Sin embargo, el indicador
+<em>worst loop</em> todavía muestra picos de 60–200 ms cuyo origen no está
+plenamente aislado; la evidencia apunta al propio volumen de mensajes por
+puerto serie. Es un punto abierto, no resuelto.</p>
+<p>Además, el punto de siembra guardado actualmente tiene un <strong>radio de
+1.0 m</strong>. La posición GPS fluctúa entre 0.5 y 1 m incluso estando quieto,
+por lo que ese radio es demasiado estrecho y puede explicar buena parte de la
+lentitud percibida. <strong>Use 10 m para las pruebas.</strong></p>
+
+<h2>12. Reglas y control de versiones</h2>
+<table>
+  <tr><th style="width:50%">Haga</th><th>No haga</th></tr>
+  <tr>
+    <td>
+      Mantener <code>SIM_MODE 1</code><br>
+      Mantener el UBEC de los servos desconectado<br>
+      Anotar lo observado, incluso cuando funciona<br>
+      Consultar antes de cambiar asignaciones de pines
+    </td>
+    <td>
+      <span class="prohibido">No</span> conectar los servos<br>
+      <span class="prohibido">No</span> volar nada<br>
+      <span class="prohibido">No</span> corregir los tres errores conocidos antes de probarlos<br>
+      <span class="prohibido">No</span> usar GPIO 2, 9, 10, 16, 17<br>
+      <span class="prohibido">No</span> fusionar la rama con <code>main</code>
+    </td>
+  </tr>
+</table>
+
+<p>El trabajo está en la rama <code>sim-mode-and-rc-trigger</code>, publicada en
+GitHub. Deliberadamente <strong>no</strong> está fusionada con <code>main</code>
+por los tres errores conocidos.</p>
+<pre>git status                  # ¿qué he modificado?
+git add -A                  # preparar todos los cambios
+git commit -m "mensaje"     # guardar un punto de control
+git push                    # enviar a GitHub</pre>
+<p>Haga <em>commit</em> cada vez que algo funcione. Es gratis y permite volver
+atrás siempre.</p>
+
+<h2>13. Glosario</h2>
+<table>
+  <tr><th style="width:24%">Término</th><th>Significado</th></tr>
+  <tr><td><strong>ESP32</strong></td><td>El pequeño computador que ejecuta el lanzador</td></tr>
+  <tr><td><strong>Flashear / cargar</strong></td><td>Copiar el programa a una placa</td></tr>
+  <tr><td><strong>Monitor Serie</strong></td><td>Ventana que muestra el texto que imprime la placa. Herramienta esencial de diagnóstico.</td></tr>
+  <tr><td><strong>Baudios</strong></td><td>Velocidad de la conexión serie. Aquí, 115200.</td></tr>
+  <tr><td><strong>Puerto COM</strong></td><td>Nombre que Windows da a una placa conectada (COM6, COM8…)</td></tr>
+  <tr><td><strong>GPIO</strong></td><td>Pin numerado del ESP32</td></tr>
+  <tr><td><strong>PWM</strong></td><td>Pulso cuyo <em>ancho</em> transmite un valor. Se usa en servos y radiocontrol.</td></tr>
+  <tr><td><strong>UART / serie</strong></td><td>Dos cables que envían datos bit a bit</td></tr>
+  <tr><td><strong>OSDK</strong></td><td>Onboard SDK de DJI: cómo leemos la posición del M600</td></tr>
+  <tr><td><strong>LittleFS</strong></td><td>Sistema de archivos del ESP32 donde viven <code>mission.json</code> y el registro</td></tr>
+  <tr><td><strong>mission.json</strong></td><td>Archivo de configuración: puntos, valores de servo, ajustes de radiocontrol</td></tr>
+  <tr><td><strong>JSONL</strong></td><td>Formato del registro: un objeto JSON por línea</td></tr>
+  <tr><td><strong>Waypoint</strong></td><td>Coordenada GPS donde debe caer una semilla</td></tr>
+  <tr><td><strong>Armar</strong></td><td>Poner el sistema en un estado donde se le permite sembrar</td></tr>
+  <tr><td><strong>UBEC</strong></td><td>Pequeña fuente que alimenta los servos a 5 V</td></tr>
+  <tr><td><strong>Haversine</strong></td><td>Fórmula de distancia entre dos coordenadas GPS</td></tr>
+  <tr><td><strong>Modo SIM</strong></td><td>Modo seguro de prueba: LED en lugar de servos</td></tr>
+</table>
+
+<h2>14. Mapa de documentos</h2>
+<table>
+  <tr><th style="width:40%">Archivo</th><th>Contenido</th></tr>
+  <tr><td><strong><code>START_HERE.md</code></strong></td><td>Versión en inglés de esta guía</td></tr>
+  <tr><td><code>SIM_MODE_VALIDATION_PLAN.md</code></td><td>Guion de pruebas. <strong>Es el trabajo siguiente.</strong></td></tr>
+  <tr><td><code>PROJECT_HANDOFF.md</code></td><td>Historial completo y justificaciones. Denso pero autorizado.</td></tr>
+  <tr><td><code>DESIGN_RATIONALE.md</code></td><td>Por qué el lanzador tiene su propio microcontrolador</td></tr>
+  <tr><td><code>SMART_LAUNCHER_COMPLETE_GUIDE.md</code></td><td>Cableado, lista de materiales, construcción mecánica</td></tr>
+  <tr><td><code>Servo_Web_Calibrator_WROVER/</code></td><td><strong>Firmware principal</strong></td></tr>
+  <tr><td><code>Servo_Web_Calibrator_WROVER/Pins.h</code></td><td>Asignación de pines — la referencia autorizada</td></tr>
+  <tr><td><code>tools/osdk_sniff.py</code></td><td>Herramienta de PC: decodifica la telemetría DJI</td></tr>
+</table>
+
+<div class="nota">
+<strong>Si se queda atascado:</strong> anote qué hizo, qué esperaba, qué ocurrió
+y cualquier mensaje del Monitor Serie. Ese hábito ha resuelto la mayoría de los
+problemas difíciles de este proyecto: varios errores se encontraron porque
+alguien notó que faltaba una línea que <em>debía</em> estar.
+</div>
+
+<p>Nada aquí es tan frágil como para romperse trabajando con cuidado. Lo único
+verdaderamente irreversible es accionar los servos, y por eso están
+desconectados.</p>
+
+<div class="pie">
+Smart Launcher — Guía de Inicio · versión 1.0 · 13 de agosto de 2026 ·
+generado desde <code>START_HERE.md</code> · rama <code>sim-mode-and-rc-trigger</code>
+</div>
+
+</body>
+</html>
