@@ -337,10 +337,10 @@ the GPIO 2 and GPIO 9/10 bugs.
 
 | # | Test | Expected | Observed | Pass |
 |---|---|---|---|---|
-| 1 | Boot | 12 checkpoints, no reset | | |
+| 1 | Boot | 12 checkpoints, no reset | **PASS** 2026-08-25 | all 12, SIM confirms GPIO12/13 unattached |
 | 2 | Dashboard renders | SIM banner, both tabs | | |
-| 3 | ARM | ARMED, 2Hz | | |
-| 4 | DROP A door 1 | 580ms ±10%, 1 blip — read it straight off the `[ACT]` line, which now prints `target / actual / +/-drift` and flags `*** OVER 10% ***` itself (Phase 3e). No slo-mo needed for this one. | | |
+| 3 | ARM | ARMED, 2Hz | **PASS** 2026-08-25 | via `arm` serial cmd; LED rate NOT observed |
+| 4 | DROP A door 1 | 580ms ±10%, 1 blip — read it straight off the `[ACT]` line, which now prints `target / actual / +/-drift` and flags `*** OVER 10% ***` itself (Phase 3e). No slo-mo needed for this one. | **PASS** 2026-08-25 | +0ms x3 runs; blip count NOT observed |
 | 5 | `/status` during drop | no stall | | |
 | 6 | Doors 2–4 | counters 2,3,4 | | |
 | 7a | Door 5 no switch | TIMEOUT @1740ms | | |
@@ -348,7 +348,7 @@ the GPIO 2 and GPIO 9/10 bugs.
 | 8 | Guard toast | `409 blocked` | | |
 | 9 | E-STOP mid-drop | LED off; state? | | |
 | 10 | E-STOP mid-sequence | **B must NOT fire** | | |
-| 11 | Auto-fire A→B | full sequence | | |
+| 11 | Auto-fire A→B | full sequence | **PASS** 2026-08-25 | A 580ms, B 350ms, logged, auto-disarm |
 | 12 | Drop 6 of 10 | **must NOT log OK** | | |
 | B1 | RC frame rate | ~50 Hz, no glitch climb | | |
 | B2 | RC full sweep | span ≥200µs | | |

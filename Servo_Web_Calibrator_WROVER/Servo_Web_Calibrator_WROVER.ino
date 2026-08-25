@@ -1116,6 +1116,29 @@ static void handleSerialLine(String s) {
     Serial.printf("unknown '%s' - try 'help'\n", cmd.c_str());
 }
 
+// ─── Per-section loop timing ──────────────────────────────────────────
+// worst-loop tells you THAT loop() stalled, never WHERE. Guessing where has
+// already cost this project four rounds (the [DLE] print, the log fetch, the
+// open/append/close, the telemetry flush). This attributes the stall to a
+// section, so the next round is a measurement instead of a hypothesis.
+enum LoopSect {
+    SECT_HTTP = 0, SECT_SERIAL, SECT_POS, SECT_ACT, SECT_ENGINE,
+    SECT_RC, SECT_CAL, SECT_SM, SECT_EVT, SECT_TLM, SECT_COUNT
+};
+static const char* SECT_NAME[SECT_COUNT] = {
+    "http", "serialcmd", "possrc", "actpoll", "engine",
+    "rc", "caltimed", "statemc", "events", "telemetry"
+};
+static uint32_t sect_worst[SECT_COUNT] = {0};
+static uint32_t sect_mark = 0;
+
+static inline void sectMark(uint8_t idx) {
+    uint32_t now = micros();
+    uint32_t dt  = now - sect_mark;
+    if (dt > sect_worst[idx]) sect_worst[idx] = dt;
+    sect_mark = now;
+}
+
 // ─── Setup — numbered checkpoints so a crash location is visible ──────
 void setup() {
     // ── Why a 4KB TX buffer, and why the baud rate did NOT change ──────
@@ -1141,10 +1164,15 @@ void setup() {
     // more than wire speed that buffering already bought us.
     //
     // MUST be called before begin() — the driver allocates there.
-    Serial.setTxBufferSize(4096);
+    size_t txbuf = Serial.setTxBufferSize(4096);
     Serial.begin(115200);
     delay(1000);   // matches the timing validated all session on this board
     Serial.println("\n=== Smart Launcher Mission Dashboard ===");
+    // Returns 0 if the UART was already running, in which case the buffer was
+    // NOT resized and the call silently did nothing (the core's log_e is
+    // invisible at CORE_DEBUG_LEVEL 0). Report it rather than assume it took.
+    Serial.printf("[PERF] TX buffer = %u bytes%s\n", (unsigned)txbuf,
+                  txbuf ? "" : "  *** RESIZE FAILED — Serial already running ***");
 
     Serial.println("[1] Config (LittleFS + mission.json, self-seed if missing)");
     if (!cfg.begin(MISSION_DEFAULT_JSON)) {
@@ -1232,7 +1260,9 @@ void setup() {
 // ─── Loop ────────────────────────────────────────────────────────────
 void loop() {
     uint32_t loop_t0 = micros();
+    sect_mark = loop_t0;
     server.handleClient();
+    sectMark(SECT_HTTP);
 
     // Serial commands (non-blocking, one char at a time)
     static String serialBuf;
@@ -1241,6 +1271,7 @@ void loop() {
         if (ch == '\n' || ch == '\r') { handleSerialLine(serialBuf); serialBuf = ""; }
         else if (serialBuf.length() < 64) serialBuf += ch;
     }
+    sectMark(SECT_SERIAL);
 
     // Drain the position source EVERY iteration. DropLogicEngine only calls
     // update() on its armed-and-idle path, which is nowhere near often
@@ -1248,12 +1279,15 @@ void loop() {
     // 128-byte hardware FIFO, so anything less than continuous servicing
     // loses bytes. Cheap when there is nothing to read.
     posSource->update();
+    sectMark(SECT_POS);
 
     // Door-drop polling — MUST run before engine->update() so it sees
     // isDropping() already transitioned to false on completion this tick.
     modA.poll();
     modB.poll();
+    sectMark(SECT_ACT);
     if (engine) engine->update();
+    sectMark(SECT_ENGINE);
 
     // A servo is being driven from here to the poll() that closes it. Inside
     // that span the logger stops echoing events to serial and stops sync'ing
@@ -1268,6 +1302,7 @@ void loop() {
     // RcPwmInput. This only decides what a confirmed fire request is
     // allowed to do — and arming is deliberately NOT one of those things.
     rcIn.update();
+    sectMark(SECT_RC);
     if (rcIn.consumeFireEdge()) {
         // Every outcome is logged, including the refusals. A refused fire is
         // exactly what you'd want to see in the log if a pilot reports "I
@@ -1307,9 +1342,11 @@ void loop() {
         calTimedActive = false;
         Serial.printf("[TIMED] done %lu ms\n", calTimedMs);
     }
+    sectMark(SECT_CAL);
 
     // State machine (button debounce + LED blink pattern)
     sm.update();
+    sectMark(SECT_SM);
 
     // ── Flight log ────────────────────────────────────────────────────
     // Events first (on change), then the periodic row.
@@ -1333,6 +1370,7 @@ void loop() {
                  RcPwmInput::bandName(rcIn.band()), rcIn.widthUs());
         logger.logEvent("rc_band", ex);
     }
+    sectMark(SECT_EVT);
 
     // 1 Hz while armed or dropping — that is the flight data worth having.
     // Idle drops to 1/10 Hz: a bench session left running for hours is what
@@ -1364,6 +1402,7 @@ void loop() {
         s.limit_b     = (digitalRead(PIN_LIMIT_B) == LOW);
         logger.logTelemetry(s);
     }
+    sectMark(SECT_TLM);
 
     // Mission complete notification
     if (engine && engine->missionComplete() && sm.isArmed()) {
@@ -1388,9 +1427,18 @@ void loop() {
         // is ActuatorModule::lastOvershootMs(), which measures the drive
         // window directly instead of inferring it from loop time — this
         // figure stays as the early warning.
-        if (loop_max_us > 10000)
+        if (loop_max_us > 10000) {
+            // Name the worst section, so the next fix is aimed rather than guessed.
+            uint8_t worst_i = 0;
+            for (uint8_t i = 1; i < SECT_COUNT; i++)
+                if (sect_worst[i] > sect_worst[worst_i]) worst_i = i;
             Serial.printf("[PERF] worst loop %lu ms in the last 5s - that is "
-                          "added drop latency\n", (unsigned long)(loop_max_us / 1000));
+                          "added drop latency (worst section: %s %lu ms)\n",
+                          (unsigned long)(loop_max_us / 1000),
+                          SECT_NAME[worst_i],
+                          (unsigned long)(sect_worst[worst_i] / 1000));
+        }
+        for (uint8_t i = 0; i < SECT_COUNT; i++) sect_worst[i] = 0;
         loop_max_us = 0;
     }
 }

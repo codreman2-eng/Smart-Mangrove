@@ -885,7 +885,9 @@ generated with Edge headless.
 
 ## PHASE 3e: THE DROP-LATENCY SPIKES — DIAGNOSED, NOT MIGRATED
 
-**Status: fixed in code, build-verified, NOT yet run on hardware (2026-08-25).**
+**Status: RUN ON HARDWARE (2026-08-25, COM10). The drive window measures
++0ms overshoot. The residual stall was traced to `lfs_file_sync()`, not
+serial and not the log size.**
 
 The 60-200ms worst-loop spikes left open by Phase 3d prompted the question of
 whether the ESP32 was simply too slow and the project should move to a
@@ -983,6 +985,84 @@ the thing that drives the servos.
    same units as the pass criterion.
 4. **The `[PERF]` warning threshold dropped from 50ms to 10ms.** Against a
    580ms window, 50ms is already 8.6% — nearly the whole budget.
+
+### BENCH RESULT (2026-08-25, COM10, SIM build, servos disconnected)
+
+**The drive window is now exact. Three consecutive runs, both modules:**
+
+    [ACT] Door 1 — timed drop OK (580 ms target, 580 ms actual, +0 ms)
+    [ACT] Door 1 — timed drop OK (350 ms target, 350 ms actual, +0 ms)
+
++0ms against a +/-58ms budget. The plan's step 4 criterion passes with the
+whole tolerance to spare, and it is now read off the line instead of measured
+in slo-mo.
+
+**`[PERF] TX buffer = 4096 bytes`** — the resize is confirmed live. Worth
+printing: `setTxBufferSize()` returns 0 and does nothing if the UART is
+already running, and the core's `log_e` about it is invisible at
+`CORE_DEBUG_LEVEL 0`. Assuming it took effect would have been a guess.
+
+### What the residual stall turned out to be — NOT what was predicted
+
+worst-loop did NOT go to zero. It still reports 38-185ms. Two hypotheses were
+tested and one survived:
+
+- **"It is the log size"** — REFUTED. Cleared the log to ~1KB and re-ran:
+  148-153ms, unchanged. `lfs_file_sync()` cost is metadata and block commits,
+  not file length.
+- **"It is serial"** — REFUTED for the residual, though it was correct for
+  the drive window. TX buffering is live and the drive window is clean.
+
+So the per-section timer was added, and it named the culprit immediately:
+
+    [PERF] worst loop 38 ms ... (worst section: telemetry 37 ms)
+    [PERF] worst loop 84 ms ... (worst section: events 71 ms)
+    [PERF] worst loop 185 ms ... (worst section: telemetry 65 ms)
+
+**It is `flush()` — `lfs_file_sync()` — costing 37-71ms per row written.**
+That is why deferring the flush inside the drive window works so completely:
+the stall is real and it is large, and the fix moves it to where nothing
+mechanical depends on it.
+
+### What this means for the deferred work
+
+The gate set before the run resolves cleanly:
+
+- **The `esp_timer` drive-window close is NOT needed.** It was aimed at
+  overshoot, and overshoot is +0ms. Do not add concurrency to servo code to
+  fix a problem that measures zero.
+- **The core-0 split IS the right target if the residual matters.** It is now
+  aimed rather than guessed: move the *logger* to the idle core so
+  `lfs_file_sync()` stalls a task that nothing is waiting on, instead of
+  `loop()`. Cheaper alternative first: stop flushing every row (flush every
+  N rows or every N seconds), which trades crash-safety granularity for the
+  stall directly.
+
+Severity has changed, though, and it is worth being clear about it. The
+residual is no longer *servo overshoot* (mechanical, permanent, accumulates
+across doors). It is a *position-sampling blind spot*: at 1 Hz telemetry
+while armed, ~40-70ms per second where position is not read — about 0.2-0.35m
+of unevaluated travel at 5 m/s. Against a sane 10m radius that is noise.
+Against the 1.0m radius currently saved on the device it is not, which is one
+more reason that radius has to go up.
+
+### Steps actually validated in this run
+
+Over the serial command interface, no browser, no eyes on the hardware:
+
+| Step | | Result |
+|---|---|---|
+| 1 | Boot, 12 checkpoints, no reset | **PASS** — all 12, `rst:0x1 POWERON`, SIM confirms GPIO 12/13 not attached |
+| 3 | ARM | **PASS** (via the `arm` serial command, not the button or dashboard) |
+| 4 | Drop A door 1, 580ms +/-10% | **PASS** — +0ms, three times |
+| 11 | Auto-fire A->B full sequence | **PASS** — A 580ms, B 350ms, both logged, mission complete, auto-disarm |
+
+**NOT validated, and not claimable from this run:** every LED criterion (the
+blips, the yellow WAIT semaphore) — nobody was looking at the board; steps 2
+and 8 (browser); 6, 7a, 7b (multi-door and the limit switch); and **9, 10, 12,
+the three that confirm defects (a), (b) and (c)**. Those still need a human at
+the bench. Note also that the device's saved mission has **one** waypoint, so
+step 12 needs waypoints added before it can run at all.
 
 ### Deliberately NOT done, pending measurement
 
@@ -1154,14 +1234,15 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
 
 - Board settings correct: ESP32 Wrover Module, 8MB flash, QIO, 80MHz,
   Default 4MB with spiffs, upload 921600. **The COM port moves between
-  sessions** — it was COM10 early on, the Phase 3d flashes went to COM6.
-  Check `Tools -> Port` every time rather than trusting a number written down.
+  sessions** — COM10 early on, COM6 for the Phase 3d flashes, and back to
+  COM10 on 2026-08-25. Check `Tools -> Port` every time rather than trusting
+  a number written down.
 - servo_minimal.ino boot instability is resolved — base is solid.
-- Module A: stop=**1670**, travel=580ms, in `mission.json`. On open, this
-  document carried **1450** while the board itself reported **open=1470** at the
-  2026-08-12 reflash. Treat 1470 as what is actually stored and 1450 as
-  unverified history; either way the stop value is worth re-verifying fresh —
-  see the plan's step 1.
+- Module A: **open=1470 stop=1670 travel=580ms**, confirmed from the board's
+  own boot banner on 2026-08-25. The **1450** this document used to carry was
+  stale history — settled. Module B reads open=1300 stop=1500 travel=350ms,
+  which are still defaults and still unmeasured. The stop values are worth
+  re-verifying against real servos — see the plan's step 1.
 - Module B has NEVER been calibrated and its **hardware is not assembled**.
   `Servo_Calibration_Tool_B.ino` is written and ready for whenever it exists.
 - **Door-to-door travel deviation on Module A is still un-characterised** (35mm
@@ -1189,7 +1270,7 @@ Measured 2026-08-25, after the Phase 3e latency work:
 
 | Build | Flash | RAM |
 |---|---|---|
-| Dashboard, SIM_MODE 1 | 1,090,944 (83%) | 49,936 (15%) |
+| Dashboard, SIM_MODE 1 | 1,091,428 (83%) | 49,944 (15%) |
 | Dashboard, SIM_MODE 0 | 1,097,427 (83%) | 50,084 (15%) |
 
 **Zero warnings from project code, both builds** (compiled with
