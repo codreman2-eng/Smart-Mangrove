@@ -345,15 +345,25 @@ flight build.
 
 ### ⚠ Three known bugs are still in the code ON PURPOSE
 
-They were found by reading the code but never confirmed by running it. They
-were deliberately left in so the next test run can prove or disprove them
-rather than someone "fixing" a problem that may not exist.
+They were found by reading the code and left in deliberately so a test run
+could prove or disprove them rather than someone "fixing" a problem that may
+not exist.
+
+**UPDATE 2026-08-25 — the run happened. #1 and #2 are CONFIRMED REAL, and a
+third was found. They are no longer hypotheses and they are no longer
+"leave them alone" — fixing them is now the job. See `PROJECT_HANDOFF.md`,
+Phase 3e, for the trace and for why they must be fixed together rather than
+one at a time.**
 
 1. **Emergency stop may fire Module B.** If you press stop during an
    automatic sequence, module B might start anyway.
 2. **Emergency stop may not disarm.** It might leave the system ARMED.
 3. **10 waypoints vs 5 doors.** If a mission has more waypoints than doors,
-   the extra ones report success without anything happening.
+   the extra ones report success without anything happening. *(Still
+   unconfirmed — needs more waypoints than the board currently has saved.)*
+4. **An aborted drop is logged as a success.** Found on 2026-08-25. Press
+   stop mid-drop and the flight log records `OK` for a door that never
+   opened.
 
 **Do not connect servos until these are resolved.** The Waypoints tab warns
 you about #3 automatically.

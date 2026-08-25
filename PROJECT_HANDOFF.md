@@ -563,11 +563,15 @@ whatever's left much faster next session.
 
 ## PHASE 3b: SIM MODE — validate everything on an LED, not the servos
 
-**Status: RUN ON HARDWARE, and it did its job.** See PHASE 3d below for what the
-dry run actually found. The GPS/waypoint half of the plan is validated; the RC
-half (Phase 3c) still has never seen a real signal. Defects (a), (b) and (c)
-below remain UNCONFIRMED - the e-stop path was never exercised in that run, so
-they are still deliberately in the code.
+**Status: RUN ON HARDWARE, and it did its job — it caught real defects.**
+See PHASE 3d and 3e below. The GPS/waypoint half of the plan is validated; the
+RC half (Phase 3c) still has never seen a real signal.
+
+**Defects (a) and (b) are now CONFIRMED on hardware (2026-08-25), and a third
+one (e) was found in the same run — an aborted drop logs as a SUCCESS.** See
+the E-STOP RESULT in Phase 3e for the trace. (c) is still unconfirmed: it
+needs more waypoints than the device currently has saved. **This is the point
+at which fixing them stops being premature and starts being the next job.**
 
 The Round 2 caveat above ("this fix is based on code reading, not
 reproduction") plus a checklist of seven items all marked "needs the user
@@ -1063,6 +1067,59 @@ and 8 (browser); 6, 7a, 7b (multi-door and the limit switch); and **9, 10, 12,
 the three that confirm defects (a), (b) and (c)**. Those still need a human at
 the bench. Note also that the device's saved mission has **one** waypoint, so
 step 12 needs waypoints added before it can run at all.
+
+### E-STOP RESULT (2026-08-25) — (a) and (b) CONFIRMED, plus a third
+
+Run over serial with the stop scheduled 193-218ms into module A's 580ms
+window — a human typing into a serial monitor cannot reliably hit that, which
+is why it was scripted. Timestamps are relative to the `simpos` that triggered
+the drop.
+
+    [ +0.040s] [ACT] Dropping door 1/5 ...          <- module A starts
+    [ +0.258s] >>> stop
+    [ +0.304s] [CMD] *** EMERGENCY STOP ***
+    [ +0.304s] [DROP] id=1 mod=A door=0 ... OK      <- aborted drop logged OK (!)
+    [ +0.304s] [DLE] Module B — drop 1
+    [ +0.304s] [ACT] Dropping door 1/5 ...          <- *** B STARTED BY THE STOP ***
+    [ +0.372s] state=3 armed=0 dropping=1           <- still DROPPING after e-stop
+    [ +0.651s] [ACT] Door 1 — timed drop OK (350 ms target, 350 ms actual, +0 ms)
+    [ +0.708s] [EVT] {"ev":"state","from":3,"to":2} <- lands in ARMED
+    [ +0.816s] [SM] Disarmed → IDLE
+
+**(a) CONFIRMED, and worse than described.** Module B did not merely start —
+it started *in the same loop tick as the stop* and ran a **complete 350ms
+drive window to completion**, `doorsB=1`. On a flight build that is a real
+door opening, immediately after the operator hit emergency stop. Root cause is
+as predicted: `handleStop()` clears `modA._active` but not
+`DropLogicEngine::_phase`, so the `WAITING_A` branch reads `!isDropping()` as
+"A finished" on its very next tick.
+
+**(b) CONFIRMED at the mechanism, symptom partly masked.** The probe 68ms
+after the stop reads `state=3` (DROPPING) — `requestDisarm()` did nothing,
+exactly as its `if (_state == ARMED)` guard predicts. The system then
+transitioned **3 -> 2, i.e. INTO ARMED**, after an emergency stop. It reached
+IDLE only because this mission has a single waypoint and completed.
+**With two or more waypoints it would have been left sitting ARMED, and would
+have fired again at the next waypoint.** The single-waypoint mission is
+hiding the full severity here; do not read the final `armed=0` as reassuring.
+
+**NEW — defect (e): an aborted drop is logged as a SUCCESS.**
+`[DROP] id=1 mod=A door=0 ... OK` was written for a drop that was killed
+193ms into a 580ms window. `ActuatorModule::stop()` never touches
+`_lastResult`, so it keeps its initialiser `DropResult::OK`, and
+`_recordDrop()` writes that verbatim. Meanwhile `doorsA=0`, because the door
+counter is only advanced by `poll()` on real completion — so the flight log
+and the door counter now disagree, and the log is the one that is wrong.
+**A flight log that reports a successful drop that never happened is worse
+than no log**, and this was not on anyone's list before the run.
+
+### These must be fixed together, not one at a time
+
+Fixing (a) alone strands `_phase` in `WAITING_A` with nothing left to advance
+it — the state machine would sit in DROPPING forever, which is a worse
+failure than the one being fixed. `handleStop()` needs to reset the engine
+phase AND force the state out of DROPPING, and `stop()` needs to record an
+ABORTED result, in one change.
 
 ### Deliberately NOT done, pending measurement
 
