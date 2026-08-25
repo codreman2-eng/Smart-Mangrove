@@ -57,6 +57,20 @@ public:
     bool isDropping() const { return _active; }
     DropResult lastResult() const { return _lastResult; }
 
+    // ── Drive-window measurement ──────────────────────────────────────
+    // How long the servo was ACTUALLY driven on the last completed drop,
+    // and how far that ran past travel_ms. The drive window is closed by
+    // poll(), which only runs when loop() gets a turn, so any loop stall
+    // lands here as overshoot on a continuous-rotation servo — i.e. as
+    // extra millimetres of cover travel. This is the direct measurement of
+    // the thing worst-loop was only ever a proxy for, and it is what the
+    // validation plan's "580ms +/-10%" criterion should be judged on.
+    //
+    // Meaningful only for TIMED doors. On the last door the limit switch
+    // is allowed to stop the drop early, so overshoot is reported as 0.
+    uint32_t lastDriveMs()     const { return _last_drive_ms; }
+    int32_t  lastOvershootMs() const { return _last_overshoot_ms; }
+
     // True if all doors have been dropped
     bool isEmpty() const { return _doors_dropped >= _door_count; }
 
@@ -96,6 +110,8 @@ private:
     bool       _is_last_door = false;
     uint32_t   _timeout_ms   = 0;
     DropResult _lastResult   = DropResult::OK;
+    uint32_t   _last_drive_ms     = 0;
+    int32_t    _last_overshoot_ms = 0;
 
     // SIM-only post-drop confirmation blips. Non-blocking by the same rule
     // as everything else in this class — a blocking flash routine would

@@ -883,6 +883,124 @@ generated with Edge headless.
 
 ---
 
+## PHASE 3e: THE DROP-LATENCY SPIKES — DIAGNOSED, NOT MIGRATED
+
+**Status: fixed in code, build-verified, NOT yet run on hardware (2026-08-25).**
+
+The 60-200ms worst-loop spikes left open by Phase 3d prompted the question of
+whether the ESP32 was simply too slow and the project should move to a
+Raspberry Pi Zero 2 W. **It is not, and it should not.** Recording the
+reasoning here because it will be asked again.
+
+### The evidence says I/O blocking, not compute
+
+The decisive datum is already in the Phase 3d field capture: `frames=368
+crcErr=2 resync=1`, with the CRC and resync counts **flat between reports**.
+A board that could not keep up with its input would show those climbing
+continuously — that is what buffer overrun looks like. The ESP32 is decoding
+100% of the A3 stream in steady state.
+
+The actual per-frame compute at 240MHz, against a 50Hz frame rate:
+
+| Work | Cost | % of one core |
+|---|---|---|
+| CRC16 + CRC32 over 231 bytes | ~5-50us | 0.03-0.25% |
+| Haversine (float, hardware FPU) | ~5us | 0.03% |
+| Servo PWM (LEDC) | 0 — hardware peripheral | 0% |
+| RC pulse (edge ISR + micros()) | ~us | ~0% |
+
+Under 1% of one core — and `grep` confirms there is no `xTaskCreatePinnedToCore`
+anywhere in the firmware, so the second core is entirely idle.
+
+Meanwhile at 115200 8N1 a byte costs **86.8us of transmit time**, and
+`Serial.printf()` blocks once the TX FIFO fills. A drop fires `[ACT]`,
+`[DROP]`, `[EVT]` and a telemetry row together: 690 bytes is 60ms, 2300 bytes
+is 200ms. **That arithmetic reproduces the observed spike range exactly, and
+no compute explanation comes within three orders of magnitude of it.** The
+`Logger` also wrote every event to serial AND flash, so each one cost double.
+
+This is the fourth instance of the same disease on this project (the `[DLE]
+dist=` print, the 752KB log read, the open/append/close, now this). **It is
+not slow, it is blocked.** Different disease, different cure — and swapping
+the CPU cures neither.
+
+### Why not the Pi Zero 2 W
+
+It is ~50x the compute, which is irrelevant when compute is under 1%. What it
+would actually cost:
+- **Tail latency gets worse.** Linux is not an RTOS; the metric here is
+  worst-case, not average. SD `fsync` and wear-levelling routinely block
+  100ms-1s. That trades a bounded, understood stall for an unbounded one.
+- **Boot 300ms -> 20-30s.** A brown-out mid-mission takes the launcher out
+  for most of a flight.
+- **SD corruption on unclean power-down** is the classic Pi-on-a-drone
+  failure, and it fights the JSONL logger directly.
+- **Two hardware-enforced safety properties are lost.** GPIO 35 is safe
+  because it is *physically* input-only; SIM mode is safe because
+  `ledcAttach()` is never called. On Linux every GPIO is bidirectional under
+  root and both guarantees become runtime ones. After a servo-runaway
+  incident, that is the wrong direction.
+- **150mA -> 350-600mA**, against an airframe where lift is the binding
+  constraint.
+- The three planted defects are **state-machine logic errors, not ESP32
+  errors**. They would port faithfully into Python, minus the experiment that
+  was going to catch them.
+
+The one genuine ESP32 pressure is flash at 83% — and that is a partition
+setting, not a migration: the module has 8MB and the build uses the 1.31MB
+"Default 4MB with spiffs" app partition.
+
+**If a camera / CV / ROS requirement ever appears, the answer changes** — but
+toward a Pi as a *companion* alongside the ESP32, never as a replacement for
+the thing that drives the servos.
+
+### What was actually changed
+
+1. **`Serial.setTxBufferSize(4096)` before `Serial.begin()`.** The core's
+   default TX buffer is 256 bytes, so a drop burst overruns it immediately.
+   At 4KB the burst is memcpy'd and `printf()` returns; the UART drains it in
+   the background while `loop()` keeps running.
+   **The baud rate was deliberately NOT raised.** 921600 would also work —
+   the OSDK link already runs at it — but the ROM bootloader prints at 115200
+   regardless, so `rst:0x8` boot-loop diagnostics would arrive as garbage, and
+   `START_HERE.md` sends a newcomer looking for exactly that string.
+   Debuggability for the person about to run the validation is worth more than
+   wire speed that buffering already bought.
+2. **`Logger::setDropWindow(bool)`**, driven from `loop()` off
+   `modA.isDropping() || modB.isDropping()`. For exactly the span a servo is
+   driven, the logger stops echoing events to serial (the row is already going
+   to flash — the echo was a duplicate) and stops `flush()`ing each row.
+   **Nothing is dropped or deferred**; the sync happens on the falling edge.
+   The only thing relaxed is crash-safety, and only for the sub-second span of
+   a drop. Correct trade: a stall inside the drive window overshoots the servo
+   mechanically, whereas losing the last log row to a brown-out landing in
+   that same sub-second is cosmetic.
+3. **`ActuatorModule` now measures the drive window directly.**
+   `lastDriveMs()` / `lastOvershootMs()`, captured immediately after the stop
+   write, printed on the `[ACT]` completion line, and flagged
+   `*** OVER 10% - LOOP STALL ***` past the plan's own tolerance. Worst-loop
+   was always a *proxy* for drop latency; this is the quantity itself, in the
+   same units as the pass criterion.
+4. **The `[PERF]` warning threshold dropped from 50ms to 10ms.** Against a
+   580ms window, 50ms is already 8.6% — nearly the whole budget.
+
+### Deliberately NOT done, pending measurement
+
+Moving position ingest and logging to the idle core
+(`xTaskCreatePinnedToCore`) and closing the drive window from an `esp_timer`
+callback — which would preempt a blocked `loop()` and make drop timing
+structurally immune to stall — are both real improvements. **Both were held
+back on purpose.** They add concurrency to servo-critical code that has never
+driven a servo, and the changes above should be enough on their own. Doing
+them now would also mean never learning which fix was the one that worked.
+
+**Decision gate: flash, drop five doors, read the `[ACT]` overshoot figures.**
+If overshoot is inside +/-10% of travel_ms, stop here. If it is not, do the
+esp_timer change first — it targets the drive window directly — and the core
+split only if that still is not enough.
+
+---
+
 ## FLIGHT CONTROLLER (Cube Orange — separate from launcher)
 
 - User has Cube Orange Standard Set. Successfully flashed ArduCopter V4.6.3, CubeOrangePlus.
@@ -1067,21 +1185,31 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
 
 ### Compile status (arduino-cli, core 3.3.8 — NOT PlatformIO)
 
-Last measured at commit **`68cbe30`** (Waypoints tab):
+Measured 2026-08-25, after the Phase 3e latency work:
 
-| Build | Flash |
-|---|---|
-| Dashboard, SIM_MODE 1 | 1,084,952 (82%) |
-| Dashboard, SIM_MODE 0 | 1,091,783 (83%) |
+| Build | Flash | RAM |
+|---|---|---|
+| Dashboard, SIM_MODE 1 | 1,090,944 (83%) | 49,936 (15%) |
+| Dashboard, SIM_MODE 0 | 1,097,427 (83%) | 50,084 (15%) |
 
-**Zero warnings from project code, both builds** — the two pre-existing
-`%d`-vs-`uint32_t` format warnings in `printSummary()` were fixed in that same
-commit, so the clean build is real rather than "clean apart from the known two".
+**Zero warnings from project code, both builds** (compiled with
+`--warnings default`). The only diagnostic emitted is the intentional
+`#warning` on flight builds listing defects (a), (b) and (c) — which is the
+guard working, not a problem. The two `%d`-vs-`uint32_t` warnings were fixed
+back in `68cbe30`.
 
-Four code commits have landed since (`de5b874`, `09c74b7`, `2a68078`,
-`5da789c`) and have NOT been re-measured; arduino-cli is not currently on this
-machine's PATH. Expect the figures to have moved by a few KB. The older
-`RC_Input_Calibration_Tool` figure was 304,640 (23%) flash / 22,756 (6%) RAM.
+The older `RC_Input_Calibration_Tool` figure was 304,640 (23%) flash /
+22,756 (6%) RAM.
+
+**arduino-cli lives inside the Arduino IDE install** — it is not on PATH:
+
+    "C:/Program Files/Arduino IDE/resources/app/lib/backend/resources/arduino-cli.exe"
+
+with `ARDUINO_DIRECTORIES_DATA=C:/Users/carli/AppData/Local/Arduino15` so it
+picks up the same esp32 core 3.3.8 the IDE uses. Build:
+
+    arduino-cli compile --fqbn esp32:esp32:esp32wrover --warnings default \
+        Servo_Web_Calibrator_WROVER
 
 ---
 
@@ -1159,6 +1287,9 @@ servo-runaway safety incident.
            No real A3 signal has ever been read.
 - Phase 3d OSDK position + Waypoints tab + JSONL flight log - DONE, verified
            outdoors at 46.8 frames/sec with a real fix
+- Phase 3e Drop-latency fix (TX buffering, drop-window logging, direct
+           overshoot measurement) - BUILD-VERIFIED, not yet run on hardware.
+           Platform migration to a Pi Zero 2 W evaluated and REJECTED.
 - Phase 4  MAVLink position (Cube Orange TELEM2) - pending
 - Phase 5  Python config tool (import QGC/UgCS missions -> mission.json) - pending
 - Phase 6  Testing (bench -> static drops -> low altitude -> full mission) - pending

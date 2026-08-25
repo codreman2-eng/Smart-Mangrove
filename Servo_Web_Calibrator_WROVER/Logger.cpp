@@ -46,8 +46,18 @@ void Logger::_writeLine(const char* line) {
         if (!_fh) { Serial.println("[LOG] Cannot open log file"); return; }
     }
     size_t n = _fh.println(line);
-    _fh.flush();
+    // Inside a drive window the sync is deferred to setDropWindow(false).
+    // lfs_file_sync() is not free, and this call site sits in loop().
+    if (!_drop_window) _fh.flush();
     _bytes += n;
+}
+
+void Logger::setDropWindow(bool active) {
+    if (active == _drop_window) return;
+    _drop_window = active;
+    // Falling edge: commit everything the window accumulated. The drive
+    // window is over, so a stall here costs nothing that matters.
+    if (!active && _fh) _fh.flush();
 }
 
 void Logger::logTelemetry(const TelemetrySample& s) {
@@ -96,7 +106,9 @@ void Logger::logEvent(const char* type, const char* extra_json) {
         snprintf(line, sizeof(line), "{\"t\":%lu,\"ev\":\"%s\"}",
                  (unsigned long)millis(), type);
     }
-    Serial.printf("[EVT] %s\n", line);
+    // Echo suppressed inside a drive window — see setDropWindow(). The row
+    // still reaches flash on the next line.
+    if (!_drop_window) Serial.printf("[EVT] %s\n", line);
     _writeLine(line);
 }
 

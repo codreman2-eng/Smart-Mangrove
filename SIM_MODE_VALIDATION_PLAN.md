@@ -340,7 +340,7 @@ the GPIO 2 and GPIO 9/10 bugs.
 | 1 | Boot | 12 checkpoints, no reset | | |
 | 2 | Dashboard renders | SIM banner, both tabs | | |
 | 3 | ARM | ARMED, 2Hz | | |
-| 4 | DROP A door 1 | 580ms ±10%, 1 blip | | |
+| 4 | DROP A door 1 | 580ms ±10%, 1 blip — read it straight off the `[ACT]` line, which now prints `target / actual / +/-drift` and flags `*** OVER 10% ***` itself (Phase 3e). No slo-mo needed for this one. | | |
 | 5 | `/status` during drop | no stall | | |
 | 6 | Doors 2–4 | counters 2,3,4 | | |
 | 7a | Door 5 no switch | TIMEOUT @1740ms | | |

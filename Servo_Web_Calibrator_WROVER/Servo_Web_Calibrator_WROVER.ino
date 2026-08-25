@@ -1118,6 +1118,30 @@ static void handleSerialLine(String s) {
 
 // ─── Setup — numbered checkpoints so a crash location is visible ──────
 void setup() {
+    // ── Why a 4KB TX buffer, and why the baud rate did NOT change ──────
+    // The 60-200ms worst-loop spikes are not compute. At 115200, 8N1, one
+    // byte costs 86.8us of TRANSMIT time, and Serial.printf() blocks once
+    // the TX FIFO fills. A drop fires [ACT] + [DROP] + [EVT] + a telemetry
+    // row together, which is several hundred to ~2000 bytes: 60ms at 690
+    // bytes, 200ms at 2300. That arithmetic matches the observed range,
+    // and no compute explanation comes within three orders of magnitude of
+    // it (CRC32 over a 231-byte OSDK frame is ~5us; haversine is ~5us).
+    //
+    // The core's default TX buffer is 256 bytes, so a burst overruns it
+    // almost immediately. At 4KB the whole burst is memcpy'd and printf()
+    // returns; the UART drains it in the background while loop() keeps
+    // running. The stall goes away without touching the wire speed.
+    //
+    // Raising the baud to 921600 would ALSO work — the OSDK link already
+    // runs at that rate, so the hardware is not in question. It was
+    // rejected because the ROM bootloader prints at 115200 regardless, so
+    // `rst:0x8` boot-loop diagnostics would arrive as garbage — and
+    // START_HERE.md sends a newcomer looking for exactly that string.
+    // Debuggability for the person about to run the validation is worth
+    // more than wire speed that buffering already bought us.
+    //
+    // MUST be called before begin() — the driver allocates there.
+    Serial.setTxBufferSize(4096);
     Serial.begin(115200);
     delay(1000);   // matches the timing validated all session on this board
     Serial.println("\n=== Smart Launcher Mission Dashboard ===");
@@ -1230,6 +1254,14 @@ void loop() {
     modA.poll();
     modB.poll();
     if (engine) engine->update();
+
+    // A servo is being driven from here to the poll() that closes it. Inside
+    // that span the logger stops echoing events to serial and stops sync'ing
+    // each row to flash, because both are loop() stall and loop() stall is
+    // what stretches the drive window. See Logger::setDropWindow(). Set AFTER
+    // the poll/update above so it reflects this iteration, and before the
+    // logging section below so that section observes it.
+    logger.setDropWindow(modA.isDropping() || modB.isDropping());
 
     // ── Pilot RC trigger ──────────────────────────────────────────────
     // Non-blocking; all the range/debounce/timeout/edge rules live in
@@ -1350,7 +1382,13 @@ void loop() {
     if (now_ms - loop_report_ms >= 5000) {
         loop_report_ms  = now_ms;
         loop_max_report = loop_max_us;
-        if (loop_max_us > 50000)
+        // Threshold is 10ms, not 50ms. 50ms was chosen when spikes were in
+        // the hundreds; against a 580ms drive window it is already 8.6% of
+        // travel, nearly the whole +/-10% budget. What actually matters now
+        // is ActuatorModule::lastOvershootMs(), which measures the drive
+        // window directly instead of inferring it from loop time — this
+        // figure stays as the early warning.
+        if (loop_max_us > 10000)
             Serial.printf("[PERF] worst loop %lu ms in the last 5s - that is "
                           "added drop latency\n", (unsigned long)(loop_max_us / 1000));
         loop_max_us = 0;

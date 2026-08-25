@@ -66,18 +66,35 @@ bool ActuatorModule::poll() {
     if (!sw_hit && !timed_out) return false;   // still running, nothing to report yet
 
     // --- Stop servo ---
+    // Measured immediately after the stop write, so it is the true width of
+    // the window the servo saw. Everything below this point is reporting,
+    // and reporting cannot stretch a window that is already closed.
     writeRaw(_stop_pwm_us);
+    _last_drive_ms = millis() - _start_ms;
     _active = false;
 
     uint8_t door_num = _doors_dropped + 1;
     if (_is_last_door) {
         _lastResult = sw_hit ? DropResult::OK : DropResult::TIMEOUT;
-        Serial.printf("[ACT] Door %d — limit switch: %s\n",
-                      door_num, sw_hit ? "OK" : "TIMEOUT");
+        // A switch stop is supposed to be early; only a timeout is overshoot.
+        _last_overshoot_ms = sw_hit ? 0
+                                    : (int32_t)(_last_drive_ms - _timeout_ms);
+        Serial.printf("[ACT] Door %d — limit switch: %s (drove %lu ms)\n",
+                      door_num, sw_hit ? "OK" : "TIMEOUT",
+                      (unsigned long)_last_drive_ms);
     } else {
         _lastResult = DropResult::OK;   // timed drop — assume OK
-        Serial.printf("[ACT] Door %d — timed drop OK (%lu ms)\n",
-                      door_num, (unsigned long)_travel_ms);
+        _last_overshoot_ms = (int32_t)(_last_drive_ms - _travel_ms);
+        // Overshoot is loop stall converted into millimetres of cover
+        // travel. Flagged, not buried, past 10% of travel_ms — that is the
+        // validation plan's own pass criterion for step 4.
+        bool out_of_spec = (_last_overshoot_ms > (int32_t)(_travel_ms / 10));
+        Serial.printf("[ACT] Door %d — timed drop OK (%lu ms target, "
+                      "%lu ms actual, %+ld ms)%s\n",
+                      door_num, (unsigned long)_travel_ms,
+                      (unsigned long)_last_drive_ms,
+                      (long)_last_overshoot_ms,
+                      out_of_spec ? "  *** OVER 10% - LOOP STALL ***" : "");
     }
 
     _doors_dropped++;
