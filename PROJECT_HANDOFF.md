@@ -10,8 +10,13 @@ A self-contained, platform-agnostic drone payload module ("Smart Launcher") that
 releases mangrove propagules (seeds) at predefined GPS coordinates. For reforestation.
 
 Core principle: the launcher does ALL drop logic onboard. The host drone only provides power
-and flies a waypoint mission. No DJI OSDK/PSDK. Works on DJI M600 or DIY ArduPilot drones by
-changing config only.
+and flies a waypoint mission. Works on DJI M600 or DIY ArduPilot drones by changing config only.
+
+This once read "No DJI OSDK/PSDK". Phase 3d (2026-08-12) narrowed that rule rather than broke
+it: the launcher now READS the A3's unprompted OSDK broadcast for position. It never transmits,
+never activates, and never requests control authority - the adapter's TX is physically
+disconnected, and that was proven on hardware. Consuming host data is not commanding through
+the host; `DropLogicEngine` is untouched and still owns every drop decision.
 
 Why the launcher runs on its own MCU instead of on the Cube Orange+ flight controller (fault
 isolation, host-platform independence, bench testing without arming an aircraft, field
@@ -558,7 +563,11 @@ whatever's left much faster next session.
 
 ## PHASE 3b: SIM MODE — validate everything on an LED, not the servos
 
-**Status: written and compile-verified, NEVER RUN ON HARDWARE.**
+**Status: RUN ON HARDWARE, and it did its job.** See PHASE 3d below for what the
+dry run actually found. The GPS/waypoint half of the plan is validated; the RC
+half (Phase 3c) still has never seen a real signal. Defects (a), (b) and (c)
+below remain UNCONFIRMED - the e-stop path was never exercised in that run, so
+they are still deliberately in the code.
 
 The Round 2 caveat above ("this fix is based on code reading, not
 reproduction") plus a checklist of seven items all marked "needs the user
@@ -673,6 +682,207 @@ it — consistent with `DESIGN_RATIONALE.md`. Drop logic stays on the launcher.
 
 ---
 
+## PHASE 3d: OSDK POSITION, WAYPOINTS, FLIGHT LOG — AND THE FIRST REAL DROP SEQUENCE
+
+**Status: RUN ON HARDWARE (2026-08-12 / 2026-08-13). Flashed to COM6, verified
+outdoors with a real GPS fix, full stage-1 drop sequence observed end to end.**
+
+This is the phase that turned "written and compiling" into "observed working",
+and it moved the position source off the M8N onto the aircraft itself. Servos
+were electrically disconnected throughout - every result below was produced by
+a `SIM_MODE 1` build driving LEDs.
+
+### Position comes from the M600's A3 broadcast (`OsdkPositionSource`)
+
+- **Read-only by construction.** The A3 broadcasts unprompted, proven with the
+  adapter's TX physically disconnected. Never transmits, never activates, never
+  requests control authority - which also keeps DJI's SDK Return-Home failsafe
+  out of reach, since that is tied to holding authority.
+- **50Hz fused position vs the M8N's 1-10Hz.** At 5 m/s a 1Hz fix means 5m of
+  travel between samples; through a 3m radius you might get one sample or none.
+  At 50Hz it is 10cm. Measured in the field: **46.8 frames/sec**.
+- **Field offsets are COMPUTED from the passFlag, never hardcoded.** This paid
+  off immediately: the aircraft's broadcast had been trimmed since the original
+  capture (passFlag 0x067F -> 0x0A79), which slides POSITION from payload offset
+  72 to 44. The decoder computed the new offset and read the coordinates
+  correctly on the first try. A hardcoded 72 would have produced garbage.
+- **A FRAME IS NOT A FIX.** Indoors the A3 broadcasts happily with lat/lon at
+  exactly 0.0 and health 0. Accepting that hands drop logic a "valid" position
+  off the coast of Africa. The gate requires health >= 3 AND non-zero
+  coordinates; 0/602 frames from the indoor capture pass it.
+- **CRC constants had to be recovered from a live capture.** The first run
+  against the real aircraft scored 0/601 on header CRC. The CRC16 seed was
+  brute-forced over the 16-bit space per candidate polynomial; the CRC32 seed
+  was solved algebraically (CRC is linear over GF(2), so init is recoverable
+  from one known frame instead of searched through 2^32).
+
+      CRC16: poly 0xA001 (reflected IBM), init 0x3AA3
+      CRC32: poly 0xEDB88320,             init 0x00003AA3
+
+  The earlier guess had the right CRC16 seed but the wrong polynomial. **This is
+  exactly the case the sync design was built for:** had CRC gated frame
+  acceptance rather than merely reporting on it, a perfectly healthy link would
+  have been reported as dead and the afternoon spent re-checking wiring.
+- `FallbackPositionSource` prefers OSDK and degrades to the M8N after 500ms of
+  staleness, logging the switchover. **A stale position is more dangerous than
+  an absent one, because it still looks valid.**
+- `loop()` now calls `posSource->update()` EVERY iteration. `DropLogicEngine`
+  only called it on its armed-and-idle path - nowhere near often enough for
+  231-byte frames every 20ms into a 128-byte FIFO. `setRxBufferSize(2048)`
+  before `begin()` buys ~180ms of slack.
+- **PIN_OSDK_RX 25 / TX 26**, because `Serial2` DEFAULTS to GPIO 16/17, which
+  are PSRAM on the WROVER. Same trap as GPIO 9/10.
+- `tools/osdk_sniff.py` is the PC-side decoder and the `--diff` field locator:
+  capture with a switch in one position, capture again with it moved, and the
+  bytes that are stable WITHIN each capture but different BETWEEN them are that
+  field. No SDK headers needed.
+
+### `SimPositionSource::begin()` never started the fallback - the "no fix" bug
+
+Reported as "no fix" outdoors, and it was not wiring. `update()`, `read()` and
+`hasFix()` all delegated to the fallback source; `begin()` did not. **UART2 was
+never initialised, so the OSDK link had never received a single byte, and the
+M8N was never started either - in every SIM build since the fallback was added.**
+The boot log still looked healthy. The only symptom was the ABSENCE of the
+`[OSDK]` and `[GNSS]` init lines at checkpoint [4], which is easy to miss when
+nothing is obviously wrong.
+
+Fixed, plus a 5-second OSDK health line on serial: frames, CRC errors, resyncs,
+passFlag, raw lat/lon, health byte, whether the fix gate passes, and an explicit
+"no frames at all, check GPIO25 wiring" hint at zero frames. Field diagnosis has
+to separate "nothing on the wire" from "frames but no fix" from "fix but stale",
+and those three are indistinguishable from the LEDs or from a browser that may
+be out of range.
+
+### Waypoints tab - a mission could not be planned at all
+
+Waypoints lived in `mission.json`, seeded from `MissionDefault.h` ONLY when the
+file was absent. Editing the header and reflashing changed nothing on a board
+that already had one, and there was no upload route or editor. The shipped
+waypoints are placeholders in Panama, which makes a walk test impossible.
+
+Built around one control: **ADD WAYPOINT HERE** captures the current OSDK/GNSS
+position on a single tap. No coordinates typed, no laptop, no import format -
+the only workflow that works in a field. It refuses when there is no fix rather
+than storing 0,0, which would be a waypoint in the Atlantic that never triggers
+and would present as a drop-logic bug rather than a missing fix.
+
+Two correctness details worth keeping:
+- Every mutation calls `engine->resetProgress()`. `_next_drop_idx` is a position
+  into `drops[]`, so editing the list underneath it would leave the engine aimed
+  at a different waypoint than the operator believes, or past the end.
+- The tab surfaces candidate defect (c) directly: when waypoints exceed doors it
+  warns that drops past the door count cannot fire and would log as successful
+  with no motion. **The shipped default is exactly that case - 10 waypoints
+  against 5 doors.**
+
+Mutations are blocked while armed, same guard as the calibration controls.
+
+### JSONL flight logger, and the three ways it stalled `loop()`
+
+`/logs/flight.jsonl`, one JSON object per line: 1Hz telemetry rows (state,
+armed, lat/lon/sats/hdop, RC width/band/Hz/glitches, doors A/B, drop index, both
+limit switches) plus event rows on change (boot, state transitions,
+`rc_acquired`, `rc_lost`, `rc_band`, `rc_fire` INCLUDING refusals with the
+reason, `drop`, `estop`). JSON Lines rather than one JSON array, deliberately:
+appendable with no closing bracket, so the file is valid at every instant. Lose
+a battery mid-write and you lose one line, not the file - and that is precisely
+the flight whose log you most need. Reads with `pd.read_json(path, lines=True)`.
+
+Then it was reported as "a lot of lag to deploy" after a successful walk test.
+The cause was the logger, three ways:
+
+1. **The log fetch.** The events-only filter read the ENTIRE file one byte at a
+   time, every 5 seconds, inside an HTTP handler. The file had reached 752KB -
+   not the 80KB assumed - because 1Hz telemetry ran through hours of idle bench
+   time. That is seconds of stall, growing every session, and while `loop()` is
+   blocked, position is not read and the drop radius is not evaluated. It landed
+   directly on drop timing. Now: seek to the last ~25KB, block reads, output
+   accumulated into 1KB chunks. `/log?tail=0` still fetches everything, on the
+   ground.
+2. **The telemetry write.** Every row did open/append/close. LittleFS walks
+   metadata on each open, which costs 80-200ms once the file is large. The
+   handle is now held open and committed with `flush()`, which calls
+   `lfs_file_sync()` - so each row still reaches flash before the call returns.
+   **The crash-safety argument for closing was satisfied by `flush()` all along;
+   closing bought nothing and cost the latency.**
+3. **The idle rate.** Telemetry now logs at 1Hz only while ARMED or DROPPING,
+   and 1/10Hz otherwise. Events stay at full fidelity in any state.
+
+A fourth, found the next day: `DropLogicEngine` printed `[DLE] WP1 dist=...` on
+EVERY loop iteration while armed. ~30 characters at 115200 baud is ~2.6ms of
+blocking, thousands of times per second, and `Serial.printf()` stalls once the
+TX buffer fills. **The distance readout was itself the largest source of drop
+latency - and it only ran while ARMED, which is exactly when the lag was
+reported.** Now rate-limited to 1Hz, or whenever the distance moves more than a
+metre so an approach stays visible in real time.
+
+Instrumentation added: `loop()` tracks its worst iteration per 5s window,
+reported on the dashboard and printed to serial above 50ms. **That figure IS the
+added drop latency, so it can be measured instead of guessed at.**
+
+The dashboard also stops auto-fetching the log while armed - the most expensive
+request the board serves should not run during the moment that matters - and the
+log viewer got a server-side events-only filter (`/log?ev=1`) plus auto-scroll,
+because telemetry writes one row per second and a drop writes two, so a few
+minutes of running buried the drop lines under hundreds of `tlm` rows in a 180px
+box that rendered from the top and never scrolled.
+
+### Serial commands restored
+
+The Phase 2 firmware had them; the dashboard replaced them with HTTP and lost
+them. That was a mistake - the browser needs the `SmartLauncher` AP, which means
+no internet and a second device, and it is useless on a bench tethered to a
+laptop.
+
+    status | clearlog | arm | disarm | stop | wp | simpos <lat> <lon> | simclear
+
+**Deliberately no servo-moving commands:** motion stays behind the dashboard's
+two-tap confirm.
+
+### THE RESULT - first full drop sequence
+
+Using those commands to clear the full log and re-run the stage-1 test end to
+end: **waypoint detected at 0.0m, Module A fired 580ms, Module B 350ms, both
+drops logged, mission complete, auto-disarm. doorsA=1 doorsB=1.** Servos
+disconnected; the announce LED is what fired.
+
+### Open items this phase left behind
+
+- **Worst-loop still spikes 60-200ms clustered around the drop**, when
+  `[ACT]`/`[DROP]`/`[EVT]` all print together. Evidence points at serial output
+  volume generally. Recorded as OPEN, not claimed as fixed.
+- **The saved waypoint radius was 1.0m.** GPS wanders 0.5-1m while stationary,
+  so that radius is narrower than the position noise, and it likely explains
+  much of the perceived lag. **10m is the right figure for testing.** Not a
+  software fault.
+- **The browser UI is still unverified from this environment** - joining the
+  `SmartLauncher` AP cuts this machine's own network access. Everything above
+  was confirmed over serial.
+- Defects (a), (b) and (c) remain unconfirmed. The run exercised the GPS
+  auto-fire path, not the e-stop path.
+
+### Documentation for a handover
+
+The project was handed to another student for a week, which exposed that every
+existing document assumes prior context: this one is written for someone already
+up to speed, and `SIM_MODE_VALIDATION_PLAN.md` assumes you know what SIM mode is
+and why it exists.
+
+`START_HERE.md` assumes none of it: safety first, then the hardware, the
+never-use pins, Arduino IDE setup, finding a COM port that moves between
+sessions, flashing, reading boot output, the dashboard, and a troubleshooting
+table built from the failures actually hit here. It states plainly what is proven
+and what is not, and it asks the reader NOT to fix the three known bugs before
+the test run confirms them - **without that note, the obvious thing for a capable
+student to do is fix them, which would destroy the experiment they are there to
+run.**
+
+`docs/GUIA_INICIO.pdf` (+ `.html`) is the same content in Spanish, 15 pages A4,
+generated with Edge headless.
+
+---
+
 ## FLIGHT CONTROLLER (Cube Orange — separate from launcher)
 
 - User has Cube Orange Standard Set. Successfully flashed ArduCopter V4.6.3, CubeOrangePlus.
@@ -714,6 +924,18 @@ Full PlatformIO project exists (was delivered as smart_launcher_phase2.zip). Mod
 
 mission.json holds: waypoints (lat/lon/radius), per-module servo PWM values, travel_ms,
 position_source ("GNSS" or "MAVLINK"), min_gps_fix_duration_s.
+
+Added since, in the shipped `Servo_Web_Calibrator_WROVER` firmware (Phases 3b-3d):
+- OsdkPositionSource - DJI A3 broadcast decoder, read-only, offsets from passFlag
+- FallbackPositionSource - prefers OSDK, degrades to the M8N after 500ms stale
+- SimPositionSource - `/simpos` injection for indoor tests; falls through to the
+  real source until a position is injected (compiled out of flight builds)
+- RcPwmInput       - IRAM_ATTR edge ISR pilot trigger on GPIO 35, never `pulseIn()`
+- Logger           - now JSONL to `/logs/flight.jsonl`, 1.1MB cap, events + 1Hz tlm
+
+`mission.json` also now holds the `rc_trigger` block (band thresholds) and the
+waypoint list is editable at runtime through the dashboard's Waypoints tab
+rather than being seeded once from `MissionDefault.h`.
 
 NOTE: The full Phase 2 firmware was written for ESP32-S3 with the RGB LED on GPIO 48.
 It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on current hardware.
@@ -771,47 +993,105 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
 12. `git commit` in this repo needed an identity — it is now set repo-locally to
     Carlos Odreman <codreman2@gmail.com>, matching the existing history.
 
+13. **A FRAME IS NOT A FIX.** The A3 broadcasts happily indoors with lat/lon at
+    exactly 0.0 and health 0. Accepting a well-formed frame as a valid position
+    hands drop logic a coordinate off the coast of Africa. Gate on health >= 3
+    AND non-zero coordinates. Same shape of error as trusting an M8N sentence
+    that parsed cleanly but carries no lock.
+
+14. **Do not let an unverified CRC gate anything.** The first live capture scored
+    0/601 on header CRC because the constants were guessed wrong, not because
+    the link was bad. Had CRC gated frame acceptance rather than merely
+    reporting, a perfectly healthy link would have been declared dead. Report
+    first, gate only once the constants are proven against real frames.
+
+15. **Compute protocol field offsets from the flag word; never hardcode them.**
+    The M600's broadcast was trimmed between sessions (passFlag 0x067F ->
+    0x0A79) and POSITION moved from offset 72 to 44. Computed offsets decoded it
+    first try; a hardcoded 72 would have produced plausible garbage.
+
+16. **A delegating wrapper must delegate `begin()` too.** `SimPositionSource`
+    forwarded `update()`, `read()` and `hasFix()` to its fallback but not
+    `begin()`, so UART2 was never initialised and BOTH position sources were
+    dead in every SIM build for as long as the fallback existed. The boot log
+    looked healthy — the only symptom was an init line that never printed.
+    **Absence of expected output is a symptom; scan for what is missing, not
+    only for what looks wrong.**
+
+17. **Serial and filesystem work in `loop()` IS drop latency.** Three separate
+    instances on this project: a `printf()` of the waypoint distance every
+    iteration (~2.6ms each at 115200, and only while ARMED — i.e. exactly when
+    it hurts); an HTTP handler reading a 752KB log byte-by-byte every 5s; and
+    open/append/close per telemetry row, where LittleFS walks metadata on each
+    open for 80-200ms once the file is large. Hold the handle and `flush()`
+    instead — `lfs_file_sync()` gives the same crash safety that closing was
+    supposed to buy. And **instrument the worst loop iteration** so this is
+    measured rather than argued about.
+
 ---
 
 ## CURRENT EXACT STATE / WHERE WE ARE
 
-- Board settings correct: ESP32 Wrover Module, COM10, 8MB flash, QIO, 80MHz,
-  Default 4MB with spiffs, upload 921600.
+*(Last reviewed 2026-08-25. Newest commit is `5da789c`, 2026-08-13.)*
+
+- Board settings correct: ESP32 Wrover Module, 8MB flash, QIO, 80MHz,
+  Default 4MB with spiffs, upload 921600. **The COM port moves between
+  sessions** — it was COM10 early on, the Phase 3d flashes went to COM6.
+  Check `Tools -> Port` every time rather than trusting a number written down.
 - servo_minimal.ino boot instability is resolved — base is solid.
-- Module A: open=1450, stop=**1670** (re-measured after the runaway incident;
-  1650 was the earlier figure), travel=580ms, all in `mission.json`. The stop
-  value is worth re-verifying fresh — see the plan's step 1.
+- Module A: stop=**1670**, travel=580ms, in `mission.json`. On open, this
+  document carried **1450** while the board itself reported **open=1470** at the
+  2026-08-12 reflash. Treat 1470 as what is actually stored and 1450 as
+  unverified history; either way the stop value is worth re-verifying fresh —
+  see the plan's step 1.
 - Module B has NEVER been calibrated and its **hardware is not assembled**.
   `Servo_Calibration_Tool_B.ino` is written and ready for whenever it exists.
 - **Door-to-door travel deviation on Module A is still un-characterised** (35mm
   then 41mm at the same 580ms). Still the main open MECHANICAL question, and it
   compounds across doors — see KNOWN ISSUE above.
-- **SIM mode and the RC pilot trigger are written and compile-verified but have
-  NEVER been run on hardware.** `SIM_MODE` is currently **1** in `Pins.h`, so
-  the sketch as committed is the dry-run build: it will not drive the servos.
-  Flip to 0 for a flight build (and read the `#warning` it emits).
-- Git: work is on branch **`sim-mode-and-rc-trigger`**, two commits ahead of
-  `main`, NOT pushed. Merge to main when the bench run has validated it.
+- **SIM mode has RUN on hardware; the RC pilot trigger has not.** The GPS
+  auto-fire path was observed end to end (Phase 3d): waypoint detected at 0.0m,
+  A fired 580ms, B 350ms, both logged, auto-disarm. No real RC signal has ever
+  been read. `SIM_MODE` is still **1** in `Pins.h`, so the sketch as committed
+  is the dry-run build: it will not drive the servos. Flip to 0 for a flight
+  build (and read the `#warning` it emits).
+- **The servos have still never been driven by this firmware. Not once.**
+  Everything proven so far was proven on LEDs with the servo UBEC unplugged.
+- **The plan's results table is still empty.** Steps 9, 10 and 12 — the ones
+  that confirm defects (a), (b) and (c) — have not been run, and neither has
+  the multi-door sequence (steps 6, 7a, 7b) or the guard toast (step 8).
+- Git: work is on branch **`sim-mode-and-rc-trigger`**, now **17 commits ahead
+  of `main` and PUSHED to origin** (`origin/sim-mode-and-rc-trigger` is level
+  with local). Merge to main when the bench run has
+  validated the rest.
 
 ### Compile status (arduino-cli, core 3.3.8 — NOT PlatformIO)
-| Build | Flash | RAM |
-|---|---|---|
-| Dashboard, SIM_MODE 1 | 1,071,008 (81%) | 48,696 (14%) |
-| Dashboard, SIM_MODE 0 | 1,071,243 (81%) | 48,828 (14%) |
-| RC_Input_Calibration_Tool | 304,640 (23%) | 22,756 (6%) |
 
-All clean, no warnings from project code. Two pre-existing `%d`-vs-`uint32_t`
-format warnings remain in `ConfigManager.cpp`/`GNSSPositionSource.cpp`
-(cosmetic, untouched).
+Last measured at commit **`68cbe30`** (Waypoints tab):
+
+| Build | Flash |
+|---|---|
+| Dashboard, SIM_MODE 1 | 1,084,952 (82%) |
+| Dashboard, SIM_MODE 0 | 1,091,783 (83%) |
+
+**Zero warnings from project code, both builds** — the two pre-existing
+`%d`-vs-`uint32_t` format warnings in `printSummary()` were fixed in that same
+commit, so the clean build is real rather than "clean apart from the known two".
+
+Four code commits have landed since (`de5b874`, `09c74b7`, `2a68078`,
+`5da789c`) and have NOT been re-measured; arduino-cli is not currently on this
+machine's PATH. Expect the figures to have moved by a few KB. The older
+`RC_Input_Calibration_Tool` figure was 304,640 (23%) flash / 22,756 (6%) RAM.
 
 ---
 
 ## IMMEDIATE NEXT GOAL
 
-**Run the SIM-mode bench validation.** Everything below it is blocked on
-software that has never executed. Follow `SIM_MODE_VALIDATION_PLAN.md`
-top to bottom — it has the pre-run checklist, per-step pass criteria and a
-results table to fill in.
+**Finish the SIM-mode bench validation.** Phase 3d proved the GPS auto-fire
+path works, but it proved it ad hoc over serial, not against the plan. The
+parts that remain are precisely the parts designed to FAIL usefully. Follow
+`SIM_MODE_VALIDATION_PLAN.md` — it has the pre-run checklist, per-step pass
+criteria and a results table still waiting to be filled in.
 
 Work splits cleanly into a software half (needs only two LEDs and a
 breadboard) and a mechanical half (needs servos, and Module B hardware
@@ -819,17 +1099,28 @@ that doesn't exist yet). Do the software half first — it is cheap, safe,
 and gates everything else.
 
 ### Software half — no servos, no aircraft
+0. Housekeeping first: **the flight log is full** (1.1MB cap reached), so
+   nothing is being recorded until it is cleared — Control tab Clear twice,
+   or the `clearlog` serial command. And **set the waypoint radius to 10m**;
+   the saved 1.0m is narrower than GPS noise.
 1. Wire the two indicator LEDs (GPIO 14 announce, GPIO 27 yellow wait,
    330R each to GND). **Leave the servo UBEC unplugged.**
-2. Flash the dashboard with `SIM_MODE 1` and run plan steps 1–12. Three
-   steps have inverted pass criteria — they exist to confirm defects
-   (a), (b) and (c), not to pass.
+2. Flash the dashboard with `SIM_MODE 1` and work the plan's results table.
+   The auto-fire A→B sequence (step 11) is already demonstrated; what is
+   NOT are the multi-door steps (6, 7a, 7b), the guard toast (8), and above
+   all **steps 9, 10 and 12** — the three with inverted pass criteria, which
+   exist to confirm defects (a), (b) and (c) rather than to pass.
 3. Fix whatever the run confirms. Those are flight-build bugs in shared
    code, not sim-mode bugs. Re-run the affected steps.
-4. RC trigger bring-up: **measure the A3 F-channel voltage first**, fit
+4. Chase the remaining **60-200ms worst-loop spikes around the drop** (see
+   Phase 3d open items). The instrumentation to measure them is already on
+   the dashboard, so this is now a measurement job, not a guessing one.
+5. RC trigger bring-up: **measure the A3 F-channel voltage first**, fit
    the 10k pull-down on GPIO 35, then `RC_Input_Calibration_Tool.ino`
    (plan steps B1–B4), then the dashboard RC card (steps 13–20). Steps
    15, 19 and 20 are the "must NOT fire" cases — those matter most.
+6. Verify the browser UI from a device that can join the `SmartLauncher` AP.
+   It has never been exercised from this environment.
 
 ### Mechanical half — needs real servos
 5. Re-measure Module A's true stop fresh on the Calibration tab. Do not
@@ -861,14 +1152,21 @@ servo-runaway safety incident.
 - Phase 1  Electronics/schematic/pins/power - DONE (spec'd)
 - Phase 2  Firmware skeleton                - DONE (ported to WROVER-E, flashed, 2 bugs fixed)
 - Phase 3  Mission Dashboard (Wi-Fi config + drop logic + calibration tab) - BUILT,
-           partially validated (Round 2 fix never reproduced in a browser)
-- Phase 3b SIM mode (LED dry-run + fake position injection) - WRITTEN, NOT RUN
-- Phase 3c Pilot RC trigger (M600 A3 F-channel) + calibrator - WRITTEN, NOT RUN
+           partially validated (browser UI still never exercised)
+- Phase 3b SIM mode (LED dry-run + fake position injection) - RUN ON HARDWARE;
+           GPS auto-fire path proven, e-stop and multi-door steps outstanding
+- Phase 3c Pilot RC trigger (M600 A3 F-channel) + calibrator - WRITTEN, NOT RUN.
+           No real A3 signal has ever been read.
+- Phase 3d OSDK position + Waypoints tab + JSONL flight log - DONE, verified
+           outdoors at 46.8 frames/sec with a real fix
 - Phase 4  MAVLink position (Cube Orange TELEM2) - pending
 - Phase 5  Python config tool (import QGC/UgCS missions -> mission.json) - pending
 - Phase 6  Testing (bench -> static drops -> low altitude -> full mission) - pending
 
 ### Document map
+- `START_HERE.md` — beginner's onboarding guide, assumes no prior context.
+  Point a newcomer here, not at this document. `docs/GUIA_INICIO.pdf` is the
+  Spanish edition of the same material.
 - `SMART_LAUNCHER_COMPLETE_GUIDE.md` — wiring, BOM, calibration, bench checklists.
 - `DESIGN_RATIONALE.md` — why the launcher runs on its own MCU, not the Cube.
   Reference answer for that question; keep in sync if new incidents change it.
@@ -876,3 +1174,5 @@ servo-runaway safety incident.
   per-step pass criteria and a results table. **This is the next thing to do.**
 - `Servo_Web_Calibrator_WROVER/Pins.h` — the authoritative pin table, with the
   reasoning for every unsafe pin recorded inline.
+- `tools/osdk_sniff.py` — PC-side DJI OSDK broadcast decoder and `--diff` field
+  locator. Use it when the A3's broadcast config changes.
