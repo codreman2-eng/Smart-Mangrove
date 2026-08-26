@@ -1236,6 +1236,177 @@ split only if that still is not enough.
 
 ---
 
+## PHASE 4 RESEARCH (2026-08-25/26): HOW DO WE KNOW A WAYPOINT IS REACHED?
+
+**Status: RESEARCH ONLY, no code written. The conclusion is that the current
+design is right and should NOT be replaced — but that the real accuracy
+problem is somewhere else entirely.**
+
+The question was whether the launcher should stop deriving "waypoint reached"
+from position, and instead read it from the host aircraft.
+
+### DJI M600 / A3 — not available, and not fixable
+
+DJI's own `DataBroadcast` reference lists every broadcast field: timestamp,
+quaternion, accel, angular rate, velocity, global/relative position, GPS info,
+RTK, magnetometer, RC, gimbal, flight status, battery, SDK control mode.
+**There is no waypoint mission progress, no mission state and no "waypoint
+reached" in the broadcast.** That list maps exactly onto the passFlag bits
+`osdk_sniff.py` already decodes, so we are already reading everything it
+carries.
+
+Waypoint progress lives in OSDK's `WaypointMission` push-data callbacks, which
+require activation and **control authority** — which is precisely what this
+project refuses (TX physically disconnected, never request authority, keep
+DJI's Return-Home failsafe out of reach). So on the M600 there is no
+read-only path to it, and the launcher deriving it itself is not merely the
+current design, it is the only one.
+
+### Cube Orange / ArduPilot — available read-only, but not trustworthy
+
+- `MISSION_CURRENT` (#42) is in the `SRx_EXT_STAT` stream group. Set
+  `SR2_EXT_STAT` and reboot and the autopilot **pro-actively** streams it,
+  no request needed — so the read-only posture survives, same as the OSDK link.
+- `MISSION_ITEM_REACHED` (#46) is an event, not a stream, and **it does not
+  mean "I am at the waypoint."** ArduPilot chases a virtual lookahead point
+  and marks the waypoint complete when THAT point arrives: *"this can be 10m
+  (or more) ahead"*, scaling with speed. Also reported unreliable across
+  command types, and ArduCopter 4.1+ S-curves changed the behaviour.
+
+**Conclusion: asking the aircraft is LESS accurate than deciding locally.**
+The launcher's 50Hz fused position gives ~10cm of travel between samples at
+5 m/s; `MISSION_ITEM_REACHED` could be 10m+ early. Do not switch. Phase 4
+should use MAVLink mission data as a **cross-check and mode/abort detector**,
+never as the drop trigger.
+
+Worth having anyway from MAVLink, when Phase 4 happens:
+- log `MISSION_CURRENT` next to the launcher's own decision, so post-flight
+  you can see the two disagree;
+- **detect the aircraft leaving AUTO or going RTL.** Nothing currently tells
+  the launcher a mission was aborted; it would keep dropping. Real safety gain
+  from the same read-only stream.
+
+### THE ACTUAL ACCURACY PROBLEM: nobody is modelling the fall
+
+A propagule keeps the aircraft's horizontal velocity while it falls. The
+launcher currently releases *at* the waypoint, so every seed lands downrange:
+
+| Height | Fall time | @2 m/s | @5 m/s | @8 m/s |
+|---|---|---|---|---|
+| 5 m  | 1.01 s | 2.0 m | **5.1 m** | 8.1 m |
+| 8 m  | 1.28 s | 2.6 m | **6.4 m** | 10.2 m |
+| 15 m | 1.75 s | 3.5 m | **8.7 m** | 14.0 m |
+
+At 5 m/s from 8m that is **6.4m past target — twice the 3m radius.** Chasing
+10cm of sampling accuracy while ignoring this is straining a gnat.
+
+### The design: predict the IMPACT point, not the release point
+
+Do not compute "where do I release". Compute where the propagule would land if
+released right now, every cycle, and fire when that enters the target radius:
+
+    impact = position + v_horizontal x (t_exit + t_fall)
+    fire when haversine(impact, target) <= radius
+
+    t_fall = (-vz + sqrt(vz^2 + 2*g*h)) / g        (vz positive DOWN)
+
+This handles turns, speed changes and wind-on-the-aircraft for free, it
+degenerates to exactly today's behaviour at zero velocity, and it is a
+substitution of `cur` in `DropLogicEngine`'s distance check rather than a
+rewrite. It also makes `radius` mean an accuracy tolerance instead of a fudge
+factor for sampling.
+
+### Everything the physics needs is ALREADY on the wire
+
+| Needed | Status | Where |
+|---|---|---|
+| lat / lon | in use | `POSITION` +0, +8 |
+| **height above takeoff** | **parsed then DISCARDED** | `POSITION` +20 |
+| barometric altitude | in use as `alt_m` | `POSITION` +16 |
+| horizontal velocity vx, vy | on the wire, not decoded | `VELOCITY` +0, +4 |
+| vertical velocity vz | on the wire, not decoded | `VELOCITY` +8 |
+| velocity health | on the wire, not decoded | `VELOCITY` +12 |
+| turn rate (gate the straight-line assumption) | enabled, not decoded | `ANG_RATE` |
+| airborne | enabled, not decoded | `STATUS` |
+
+The live passFlag **0x0A79** decodes to ON: TIME, VELOCITY, ANG_RATE,
+POSITION, GPS_DETAIL, RC, STATUS — OFF: QUATERNION, ACCEL, RTK, MAG, GIMBAL,
+BATTERY, DEVICE. **No new hardware and no DJI Assistant 2 change is needed.**
+It is decode-and-store work only.
+
+**The one concrete bug found by this research:** `OsdkPositionSource.cpp:144`
+reads `float alt, height;`, memcpy's BOTH, then assigns only `_last.alt_m =
+alt`. DJI's `height` is height above the takeoff point — the exact number
+ballistics needs — and it is being parsed off the wire and thrown away because
+`Position` has no field for it. One struct member and one assignment.
+
+### What is genuinely NOT available
+
+1. **`t_exit`** — when the propagule actually leaves during the 580ms travel.
+   Up to **2.9m of along-track spread at 5 m/s** until measured. Bench job,
+   240fps phone, same technique as the drive-window check. **No drone needed.**
+2. **Terrain / tide offset.** `height` is above the TAKEOFF point, not the drop
+   surface. On a tidal mangrove flat that matters. Suggest a per-waypoint
+   `ground_offset_m` in `mission.json` — the operator knows it, the aircraft
+   does not.
+3. **Wind on the falling propagule.** The aircraft's velocity already includes
+   wind drift on itself, but not what wind does to the seed over 1.3s of fall.
+4. **Propagule drag.** Rhizophora propagules are dense darts, so near-ballistic
+   is a fair first model, but it needs a calibration factor from real drops.
+
+### Error budget at 5 m/s, 8m
+
+| Term | Magnitude | Status |
+|---|---|---|
+| Fall carry | **6.4 m** | computable today from data in hand |
+| Exit-time uncertainty | up to **2.9 m** | bench measurement, no drone |
+| Wind + drag | ~1-2 m? | empirical, needs real drops |
+| Tide / terrain | site-dependent | operator config |
+| GPS position | 0.5-1 m | accepted |
+| Sampling @50Hz | 0.1 m | negligible |
+
+### Bonus finding: the RC trigger could avoid GPIO 35 — but only partly
+
+`Telemetry::RC` in the broadcast is exactly six `int16_t`: **roll, pitch, yaw,
+throttle, mode, gear. No auxiliary channels.** So the A3's physical F-channel
+output pin — what Phase 3c plans to wire to GPIO 35 — is NOT in the broadcast.
+
+What IS available is the **mode** switch (P/A/F) and the **gear** switch. If
+the M600's gear switch is otherwise unused, a pilot trigger could come over
+the existing serial link with **no new wire, no 10k pull-down, and none of the
+unverified A3 output-voltage risk**, on a link already proven at 46.8 fps.
+Do NOT use `mode` — F mode is needed for other things. `RcPwmInput`'s
+band/debounce/edge logic ports nearly verbatim onto an int16 stream, and
+signal-loss fail-safe becomes broadcast staleness, which is already detected.
+
+`osdk_sniff.py --diff` exists precisely to settle which switch moves which
+bytes. Capture with the switch up, capture with it down.
+
+### Sources
+
+- DJI `DataBroadcast` reference and `Telemetry::RC` struct reference
+  (developer.dji.com/onboard-api-reference)
+- ArduPilot "Requesting Data From The Autopilot"
+  (ardupilot.org/dev/docs/mavlink-requesting-data.html)
+- ArduPilot discourse: "When is MISSION_ITEM_REACHED sent" (t/21107) and
+  "Problem monitoring Mission using MISSION_CURRENT and MISSION_ITEM_REACHED"
+  (t/98988)
+- Mission Planner built-in SITL (ardupilot.org/planner/docs/mission-planner-simulation.html)
+
+### Testable with NO aircraft
+
+- Mission Planner has **built-in SITL** (Simulation tab, one click, no build).
+  Fly a mission, log `MISSION_ITEM_REACHED` and `MISSION_CURRENT` against
+  `GLOBAL_POSITION_INT`, and measure how many metres early the event really
+  fires. Turns the "10m or more" folklore into a number.
+- The impact predictor is pure math — build and test it offline, the same way
+  the CRC and passFlag work was validated before touching hardware.
+- **The 602-frame OSDK capture is GONE** (`*.bin` is gitignored, nothing on
+  disk). A fresh capture is needed for offline replay — grab one, plus a
+  `--diff` pair for the gear switch, in a single session rather than two trips.
+
+---
+
 ## FLIGHT CONTROLLER (Cube Orange — separate from launcher)
 
 - User has Cube Orange Standard Set. Successfully flashed ArduCopter V4.6.3, CubeOrangePlus.
@@ -1467,11 +1638,30 @@ picks up the same esp32 core 3.3.8 the IDE uses. Build:
 
 ## IMMEDIATE NEXT GOAL
 
-**Finish the SIM-mode bench validation.** Phase 3d proved the GPS auto-fire
-path works, but it proved it ad hoc over serial, not against the plan. The
-parts that remain are precisely the parts designed to FAIL usefully. Follow
-`SIM_MODE_VALIDATION_PLAN.md` — it has the pre-run checklist, per-step pass
-criteria and a results table still waiting to be filled in.
+*(Rewritten 2026-08-26. Steps 1, 3, 4, 9, 10 and 11 now PASS; defects (a),
+(b), (e) are confirmed-and-fixed and (c) is fixed-but-unproven.)*
+
+**Three things are now in front, in this order:**
+
+1. **Confirm defect (c)** — plan step 12, the only planted defect never
+   reproduced. Needs a mission with more waypoints than doors; the device has
+   ONE waypoint saved. Add waypoints from a phone on the `SmartLauncher` AP,
+   or reseed `mission.json` by erasing LittleFS — in which case put the
+   measured values (A open=1470 stop=1670 travel=580, B open=1300 stop=1500
+   travel=350, RC SAFE<=1300 FIRE>=1700) into `MissionDefault.h` FIRST or they
+   are lost. Steps 6, 7a and 12 all unlock together, and all are
+   serial-observable via `tools/bench_serial.py`.
+2. **The ballistics work** — see PHASE 4 RESEARCH above. Start with
+   `OsdkPositionSource.cpp:144`, which parses DJI's height-above-takeoff and
+   then discards it. This is worth ~6m of landing accuracy, which is more than
+   everything else on this list put together.
+3. **The rest of the plan needs a human at the bench** — every LED criterion,
+   steps 2 and 8 (browser), 7b (limit switch), and the whole RC path, which
+   still needs the A3 F-channel voltage measured first.
+
+Everything below still applies. Follow `SIM_MODE_VALIDATION_PLAN.md` — it has
+the pre-run checklist, per-step pass criteria and a partly-filled results
+table.
 
 Work splits cleanly into a software half (needs only two LEDs and a
 breadboard) and a mechanical half (needs servos, and Module B hardware
@@ -1562,3 +1752,9 @@ servo-runaway safety incident.
   reasoning for every unsafe pin recorded inline.
 - `tools/osdk_sniff.py` — PC-side DJI OSDK broadcast decoder and `--diff` field
   locator. Use it when the A3's broadcast config changes.
+- `tools/bench_serial.py` — PC-side serial bench driver. `boot`, `listen`,
+  `cmd`, `drop` and `estop` modes. The `estop` mode schedules the emergency
+  stop INSIDE module A's drive window, which a human cannot reliably do by
+  hand; it is what confirmed defects (a), (b) and (e) and then caught the
+  first fix landing on only one of the two e-stop paths. Prints the live port
+  list if the CH340 has moved.
