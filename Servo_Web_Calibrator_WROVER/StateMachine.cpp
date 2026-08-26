@@ -49,6 +49,15 @@ void StateMachine::requestDisarm() {
     }
 }
 
+void StateMachine::emergencyStop() {
+    // FAULT is deliberately excluded: it is unrecoverable by design, and an
+    // emergency stop must never launder a faulted system back into a state
+    // that can be armed.
+    if (_state == SystemState::FAULT) return;
+    _setState(SystemState::IDLE);
+    Serial.println("[SM] *** EMERGENCY STOP -> IDLE (disarmed) ***");
+}
+
 void StateMachine::completeBoot() {
     if (_state == SystemState::BOOT) {
         _setState(SystemState::IDLE);

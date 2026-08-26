@@ -107,6 +107,19 @@ bool ActuatorModule::poll() {
 
 void ActuatorModule::stop() {
     writeRaw(_stop_pwm_us);
+    // Defect (e): without this, _lastResult keeps whatever it held — which on
+    // a first drop is the initialiser OK — and the engine logs the aborted
+    // drop as a success. Record how far it actually got, too: the cover is
+    // now parked partway between doors and that distance is the one number
+    // that says how far.
+    if (_active) {
+        _last_drive_ms     = millis() - _start_ms;
+        _last_overshoot_ms = 0;          // meaningless for an abort
+        _lastResult        = DropResult::ABORTED;
+        Serial.printf("[ACT] Module %c ABORTED after %lu ms of a %lu ms window\n",
+                      _id, (unsigned long)_last_drive_ms,
+                      (unsigned long)_travel_ms);
+    }
     _active      = false;
     _flashActive = false;   // e-stop must leave the announce LED dark
     Serial.printf("[ACT] Module %c STOP\n", _id);

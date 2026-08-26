@@ -567,11 +567,10 @@ whatever's left much faster next session.
 See PHASE 3d and 3e below. The GPS/waypoint half of the plan is validated; the
 RC half (Phase 3c) still has never seen a real signal.
 
-**Defects (a) and (b) are now CONFIRMED on hardware (2026-08-25), and a third
-one (e) was found in the same run — an aborted drop logs as a SUCCESS.** See
-the E-STOP RESULT in Phase 3e for the trace. (c) is still unconfirmed: it
-needs more waypoints than the device currently has saved. **This is the point
-at which fixing them stops being premature and starts being the next job.**
+**Defects (a), (b) and (e) were CONFIRMED on hardware (2026-08-25) and are
+now FIXED and re-verified** — see the E-STOP RESULT and THE FIX in Phase 3e.
+(c) is still OPEN and still unconfirmed: it needs more waypoints than the
+device currently has saved.
 
 The Round 2 caveat above ("this fix is based on code reading, not
 reproduction") plus a checklist of seven items all marked "needs the user
@@ -1121,6 +1120,68 @@ failure than the one being fixed. `handleStop()` needs to reset the engine
 phase AND force the state out of DROPPING, and `stop()` needs to record an
 ABORTED result, in one change.
 
+### THE FIX (2026-08-25) — (a), (b), (e) closed and re-verified
+
+Fixed as ONE change, because fixing (a) alone would have stranded `_phase` in
+`WAITING_A` with nothing to advance it — DROPPING forever, worse than the bug.
+
+- **`DropLogicEngine::abort()`** — tears down the in-flight sequence and resets
+  `_phase` to IDLE. Deliberately does **not** advance `_next_drop_idx`: an
+  aborted waypoint was not serviced and must still be pending on re-arm.
+  Records the interrupted door truthfully before resetting.
+- **`StateMachine::emergencyStop()`** — IDLE from any state except FAULT.
+  `requestDisarm()`'s `ARMED` guard was **not** loosened: that guard is right
+  for the normal disarm path (you should not be able to casually disarm
+  mid-drop). An emergency stop gets its own authority instead of weakening a
+  correct rule. FAULT is excluded so an e-stop can never launder a faulted
+  system back into an armable state.
+- **`DropResult::ABORTED`**, set by `ActuatorModule::stop()`, which also
+  records how far into the window it got — the cover is now parked partway
+  between doors and that distance is the one number that says how far.
+  `_recordDrop()`'s OK/TIMEOUT ternary became a proper mapping, so an abort is
+  no longer relabelled as a TIMEOUT (a different failure with a different
+  cause, and the log is all anyone gets after a flight).
+
+### The fix did not work the first time — and that is the interesting part
+
+First flash of the fix, re-running the identical script: **module B fired
+anyway.** The fix was correct; it was in the wrong place.
+
+`handleStop()` is the HTTP route. The serial `stop` command was a **second,
+independent copy** of the same body at line 1100 — `modA.stop(); modB.stop();
+sm.requestDisarm(); ...` — which never called `handleStop()`. The fix landed on
+one copy and silently missed the other. The regression test drives the serial
+path, so it caught it immediately.
+
+Both entry points now call one `emergencyStopAll()`. **Two implementations of
+an emergency stop is one too many.** Note the near-miss: had the test been run
+through the browser instead, it would have PASSED, and the serial path — the
+one used on the bench, tethered to a laptop, with no dashboard — would have
+stayed broken.
+
+### Re-verified on hardware, same script, same timing
+
+    [ +0.272s] >>> stop
+    [ +0.303s] [DROP] id=1 mod=A door=1 ... ABORTED
+    [ +0.367s] [DLE] *** ABORTED during module A — sequence torn down,
+                     waypoint 1 still pending ***
+    [ +0.367s] [ACT] Module A ABORTED after 268 ms of a 580 ms window
+    [ +0.367s] [SM] *** EMERGENCY STOP -> IDLE (disarmed) ***
+    [ +0.445s] [EVT] {"ev":"state","from":3,"to":1}
+    [ +0.445s] state=1 armed=0 dropping=0
+    [ +0.445s] doorsA=0 doorsB=0 dropIdx=0 of 1
+
+- **(a)** B never starts. No second drive window. `doorsB=0`.
+- **(b)** DROPPING -> IDLE directly, disarmed.
+- **(e)** the row says `ABORTED`, and `dropIdx=0` — the waypoint was not consumed.
+
+**Happy path re-checked for regression** (same waypoint, no stop): A 580ms
++0ms, B 350ms +0ms, both `OK`, `doorsA=1 doorsB=1`, `dropIdx` advances,
+auto-disarm. Unchanged.
+
+**(c) remains OPEN and unconfirmed** — it needs more waypoints than the device
+has saved. The flight-build `#warning` now names only (c).
+
 ### Deliberately NOT done, pending measurement
 
 Moving position ingest and logging to the idle core
@@ -1272,6 +1333,22 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
     looked healthy — the only symptom was an init line that never printed.
     **Absence of expected output is a symptom; scan for what is missing, not
     only for what looks wrong.**
+
+18. **Two implementations of a safety-critical action is one too many.** The
+    e-stop existed twice — `handleStop()` for the dashboard route and a
+    separate copy inside the serial command handler. Fixing confirmed defects
+    (a) and (b) in `handleStop()` left the serial path still firing module B
+    on an emergency stop, and only the regression test caught it. Worse, the
+    test could easily have been run through the browser, passed, and left the
+    bench path — the one actually used, tethered to a laptop with no dashboard
+    — broken. If a third entry point ever appears, it calls the same function.
+
+19. **Fix interacting defects together, not one at a time.** Fixing (a) alone
+    would have stranded `DropLogicEngine::_phase` in `WAITING_A` with nothing
+    left to advance it: the state machine would have sat in DROPPING forever,
+    a worse failure than the one being repaired. The two were only visible as
+    a pair because the run showed (a) *completing the mission*, which is what
+    masked (b)'s real symptom.
 
 17. **Serial and filesystem work in `loop()` IS drop latency.** Three separate
     instances on this project: a `printf()` of the waypoint distance every
@@ -1426,8 +1503,11 @@ servo-runaway safety incident.
 - Phase 3d OSDK position + Waypoints tab + JSONL flight log - DONE, verified
            outdoors at 46.8 frames/sec with a real fix
 - Phase 3e Drop-latency fix (TX buffering, drop-window logging, direct
-           overshoot measurement) - BUILD-VERIFIED, not yet run on hardware.
+           overshoot measurement) - DONE, verified on hardware: +0ms overshoot.
            Platform migration to a Pi Zero 2 W evaluated and REJECTED.
+- Phase 3f E-stop defects (a), (b) + newly found (e) - CONFIRMED on hardware,
+           FIXED, and re-verified. Both e-stop entry points unified. (c) still
+           open.
 - Phase 4  MAVLink position (Cube Orange TELEM2) - pending
 - Phase 5  Python config tool (import QGC/UgCS missions -> mission.json) - pending
 - Phase 6  Testing (bench -> static drops -> low altitude -> full mission) - pending

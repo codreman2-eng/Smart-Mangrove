@@ -120,6 +120,27 @@ bool DropLogicEngine::startManualPair() {
     return true;
 }
 
+void DropLogicEngine::abort() {
+    if (_phase == Phase::IDLE) return;        // nothing in flight, idempotent
+
+    // Log the truth about the door that was interrupted. The module's own
+    // stop() has set (or is about to set) DropResult::ABORTED; door number is
+    // doorsDropped()+1 because the counter only advances on real completion,
+    // so the door being attempted is the next one, not the last one finished.
+    const bool a = (_phase == Phase::WAITING_A);
+    ActuatorModule& m = a ? _modA : _modB;
+    _recordDrop(_currentDropId(), a ? 0 : 1,
+                m.doorsDropped() + 1, _pending_pos, DropResult::ABORTED);
+
+    Serial.printf("[DLE] *** ABORTED during module %c — sequence torn down, "
+                  "waypoint %d still pending ***\n",
+                  a ? 'A' : 'B', _next_drop_idx + 1);
+
+    _phase       = Phase::IDLE;
+    _manual_pair = false;
+    // _next_drop_idx deliberately untouched — see abort() in the header.
+}
+
 void DropLogicEngine::_recordDrop(uint8_t drop_id, uint8_t module_idx,
                                   uint8_t door_num, const Position& pos,
                                   DropResult result) {
@@ -132,9 +153,14 @@ void DropLogicEngine::_recordDrop(uint8_t drop_id, uint8_t module_idx,
     evt.lon_deg      = pos.lon_deg;
     evt.alt_m        = pos.alt_m;
     evt.success      = (result == DropResult::OK);
-    strncpy(evt.result_str,
-            result == DropResult::OK ? "OK" : "TIMEOUT",
-            sizeof(evt.result_str));
+    // Was a bare OK/TIMEOUT ternary, which would have relabelled an ABORTED
+    // drop as TIMEOUT — a different failure with a different cause, and the
+    // log is the only record anyone gets after a flight.
+    const char* rs = "TIMEOUT";
+    if      (result == DropResult::OK)      rs = "OK";
+    else if (result == DropResult::ABORTED) rs = "ABORTED";
+    else if (result == DropResult::FAULT)   rs = "FAULT";
+    strncpy(evt.result_str, rs, sizeof(evt.result_str));
     _log.logDrop(evt);
 }
 

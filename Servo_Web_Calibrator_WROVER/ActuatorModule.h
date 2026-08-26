@@ -6,8 +6,17 @@ enum class DropResult {
     OK,               // limit switch confirmed (or timed drop assumed OK)
     TIMEOUT,          // limit switch never triggered — logged as FAIL
     ALREADY_DONE,     // all doors already spent
-    FAULT             // hardware error
+    FAULT,            // hardware error
+    ABORTED           // emergency stop killed the drive window mid-travel
 };
+
+// ABORTED exists because of defect (e), confirmed on hardware 2026-08-25:
+// stop() used to leave _lastResult at its initialiser, DropResult::OK, so a
+// drop killed 193ms into a 580ms window was written to the flight log as a
+// SUCCESS. A log that reports a drop which never happened is worse than no
+// log. The door is also NOT counted — _doors_dropped only advances in poll()
+// on real completion — so the cover is somewhere between two doors and the
+// row must say so.
 
 // One physical launcher module (A or B)
 // Drives one continuous rotation servo, reads one limit switch.

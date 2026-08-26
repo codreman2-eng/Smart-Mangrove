@@ -349,11 +349,11 @@ They were found by reading the code and left in deliberately so a test run
 could prove or disprove them rather than someone "fixing" a problem that may
 not exist.
 
-**UPDATE 2026-08-25 — the run happened. #1 and #2 are CONFIRMED REAL, and a
-third was found. They are no longer hypotheses and they are no longer
-"leave them alone" — fixing them is now the job. See `PROJECT_HANDOFF.md`,
-Phase 3e, for the trace and for why they must be fixed together rather than
-one at a time.**
+**UPDATE 2026-08-25 — the run happened. #1, #2 and #4 were CONFIRMED REAL
+and are now FIXED and re-verified on hardware. #3 is still open and still
+unconfirmed. So: the only bug left in deliberately is #3, and it needs a
+mission with more waypoints than the board currently has saved. See
+`PROJECT_HANDOFF.md` Phase 3e for the traces.**
 
 1. **Emergency stop may fire Module B.** If you press stop during an
    automatic sequence, module B might start anyway.

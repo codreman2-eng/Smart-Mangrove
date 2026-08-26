@@ -43,6 +43,20 @@ public:
     // Returns false if a sequence is already in progress or A is empty.
     bool startManualPair();
 
+    // Emergency stop: tear down any in-flight sequence.
+    //
+    // Defect (a), confirmed on hardware 2026-08-25: handleStop() used to stop
+    // both modules without touching _phase. ActuatorModule::stop() clears
+    // _active, so on the VERY NEXT tick the WAITING_A branch below read
+    // !isDropping() as "A finished", and started module B — a real door
+    // opening immediately after the operator hit emergency stop. Observed: B
+    // began in the same loop iteration as the stop and ran a complete 350ms
+    // drive window.
+    //
+    // Deliberately does NOT advance _next_drop_idx: an aborted waypoint was
+    // not serviced, and must still be pending when the operator re-arms.
+    void abort();
+
     // True when all drops are complete
     bool missionComplete() const;
 

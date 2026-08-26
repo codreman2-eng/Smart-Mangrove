@@ -24,6 +24,19 @@ public:
     // External modules call these to request transitions
     void requestArm();
     void requestDisarm();
+
+    // Emergency stop -> IDLE from ANY state (except FAULT).
+    //
+    // Defect (b), confirmed on hardware 2026-08-25: handleStop() called
+    // requestDisarm(), which is guarded to ARMED — and during a drop the
+    // state is DROPPING, so it silently did nothing. The system was observed
+    // still reading state=DROPPING 68ms after an emergency stop, then
+    // transitioning INTO ARMED when the (defect (a)) sequence finished.
+    //
+    // The fix is NOT to loosen requestDisarm()'s guard. That guard is correct
+    // for the normal disarm path — you should not be able to casually disarm
+    // mid-drop. An emergency stop gets its own explicit authority instead.
+    void emergencyStop();
     void setDropping(bool active);
     void setFault(const char* reason);
 

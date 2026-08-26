@@ -89,7 +89,7 @@
 #include "RcPwmInput.h"
 
 #if !SIM_MODE
-#warning "FLIGHT BUILD: candidate defects (a) e-stop may fire Module B mid-sequence, (b) e-stop cannot leave DROPPING, (c) 10 waypoints vs 5 doors logs false OK. See SIM_MODE_VALIDATION_PLAN.md - confirm and fix before real drops."
+#warning "FLIGHT BUILD: defects (a) e-stop fires Module B, (b) e-stop cannot leave DROPPING and (e) aborted drop logs as OK were CONFIRMED on hardware 2026-08-25 and are FIXED. Defect (c) 10 waypoints vs 5 doors logs false OK is still OPEN and still unconfirmed - it needs more waypoints than the device has saved. See SIM_MODE_VALIDATION_PLAN.md step 12."
 #endif
 
 // ─── Objects ────────────────────────────────────────────────────────────
@@ -831,15 +831,36 @@ void handleSimPos() {
 }
 #endif
 
-void handleStop() {
-    // Emergency stop — no confirm, always allowed, idempotent.
+// THE emergency stop. Both entry points — the dashboard's /stop route and
+// the serial 'stop' command — go through here and nowhere else.
+//
+// They used to be two independent copies of the same body. That is how the
+// serial path kept defects (a) and (b) after the HTTP path was fixed: the fix
+// landed on one copy and silently missed the other, and the regression test
+// (which drives the serial path) caught it still firing module B. Two
+// implementations of an emergency stop is one too many — if this ever needs a
+// third entry point, it calls this function too.
+//
+// ORDER MATTERS. The engine is torn down FIRST, while _phase still says which
+// module was in flight. Stopping the modules without resetting the phase IS
+// defect (a): stop() clears _active, and the engine's very next tick reads
+// that as "A finished" and starts B.
+void emergencyStopAll() {
+    if (engine) engine->abort();
     modA.stop();
     modB.stop();
+    manualDropActive = false;      // a manual drop is over too
     calRunningA = calRunningB = false;
     calTimedActive = false;
-    sm.requestDisarm();
+    // NOT requestDisarm() — it is guarded to ARMED and silently no-ops from
+    // DROPPING, which was defect (b).
+    sm.emergencyStop();
     logger.logEvent("estop");
-    Serial.println("[CMD] *** EMERGENCY STOP ***");
+    Serial.println(F("[CMD] *** EMERGENCY STOP ***"));
+}
+
+void handleStop() {
+    emergencyStopAll();
     server.send(200, "text/plain", "stopped");
 }
 
@@ -1088,14 +1109,7 @@ static void handleSerialLine(String s) {
     if (cmd == "clearlog") { logger.clearLog(); return; }
     if (cmd == "arm")      { sm.requestArm();    return; }
     if (cmd == "disarm")   { sm.requestDisarm(); return; }
-    if (cmd == "stop") {
-        modA.stop(); modB.stop();
-        calRunningA = calRunningB = false; calTimedActive = false;
-        sm.requestDisarm();
-        logger.logEvent("estop");
-        Serial.println(F("[CMD] *** EMERGENCY STOP ***"));
-        return;
-    }
+    if (cmd == "stop")     { emergencyStopAll(); return; }
     if (cmd == "wp") {
         const MissionConfig& mc = cfg.config();
         Serial.printf("%d waypoints\n", mc.drop_count);

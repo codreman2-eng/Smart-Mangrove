@@ -346,8 +346,8 @@ the GPIO 2 and GPIO 9/10 bugs.
 | 7a | Door 5 no switch | TIMEOUT @1740ms | | |
 | 7b | Door 5 switch hit | OK, early stop | | |
 | 8 | Guard toast | `409 blocked` | | |
-| 9 | E-STOP mid-drop | LED off; state? | **(b) CONFIRMED** 2026-08-25 | 68ms after the stop: `state=3 dropping=1`. requestDisarm() no-opped. LED NOT observed |
-| 10 | E-STOP mid-sequence | **B must NOT fire** | **(a) CONFIRMED** 2026-08-25 | B started in the SAME loop tick as the stop and ran a full 350ms window. doorsB=1 |
+| 9 | E-STOP mid-drop | LED off; state? | **(b) CONFIRMED then FIXED** 2026-08-25 | was `state=3 dropping=1` 68ms after the stop; now `state=1 armed=0 dropping=0`, transition 3->1 direct. LED NOT observed |
+| 10 | E-STOP mid-sequence | **B must NOT fire** | **(a) CONFIRMED then FIXED** 2026-08-25 | B fired a full 350ms window; after the fix B never starts, `doorsB=0`, waypoint stays pending |
 | 11 | Auto-fire A→B | full sequence | **PASS** 2026-08-25 | A 580ms, B 350ms, logged, auto-disarm |
 | 12 | Drop 6 of 10 | **must NOT log OK** | | |
 | B1 | RC frame rate | ~50 Hz, no glitch climb | | |
