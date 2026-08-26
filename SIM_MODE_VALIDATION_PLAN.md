@@ -349,7 +349,7 @@ the GPIO 2 and GPIO 9/10 bugs.
 | 9 | E-STOP mid-drop | LED off; state? | **(b) CONFIRMED then FIXED** 2026-08-25 | was `state=3 dropping=1` 68ms after the stop; now `state=1 armed=0 dropping=0`, transition 3->1 direct. LED NOT observed |
 | 10 | E-STOP mid-sequence | **B must NOT fire** | **(a) CONFIRMED then FIXED** 2026-08-25 | B fired a full 350ms window; after the fix B never starts, `doorsB=0`, waypoint stays pending |
 | 11 | Auto-fire A→B | full sequence | **PASS** 2026-08-25 | A 580ms, B 350ms, logged, auto-disarm |
-| 12 | Drop 6 of 10 | **must NOT log OK** | | |
+| 12 | Drop 6 of 10 | **must NOT log OK** | **NOT RUN** | (c) was FIXED 2026-08-25 by code reading, never reproduced. Needs >5 waypoints; device has 1. Expect an `EMPTY` row and the mission to end, not a false OK |
 | B1 | RC frame rate | ~50 Hz, no glitch climb | | |
 | B2 | RC full sweep | span ≥200µs | | |
 | B3 | RC suggest | bands match switch positions | | |

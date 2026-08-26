@@ -25,9 +25,23 @@ void DropLogicEngine::update() {
             return;
         }
 
-        // Module B fires immediately after A confirms
+        // Module B fires immediately after A confirms.
+        // Same defect (c) class: an ignored false return here would have the
+        // WAITING_B branch log a phantom B drop on the next tick. B can run
+        // out independently of A, so this is not covered by the check on the
+        // trigger path.
         Serial.printf("[DLE] Module B — drop %d\n", drop_id);
-        _modB.startDrop();
+        if (!_modB.startDrop()) {
+            Serial.println("[DLE] *** Module B has no doors left — sequence "
+                           "ends unbalanced ***");
+            _recordDrop(drop_id, 1, _modB.doorsDropped(), _pending_pos,
+                        DropResult::ALREADY_DONE);
+            _sm.setDropping(false);
+            _phase = Phase::IDLE;
+            if (!_manual_pair) _next_drop_idx++;
+            _manual_pair = false;
+            return;
+        }
         _phase = Phase::WAITING_B;
         return;
     }
@@ -89,11 +103,34 @@ void DropLogicEngine::update() {
         _pending_idx = _next_drop_idx;
         _pending_pos = cur;
         _manual_pair = false;
+
+        // ── Defect (c) ────────────────────────────────────────────────
+        // startDrop()'s false return used to be ignored here, and _phase was
+        // set to WAITING_A regardless. With no drop actually started, the
+        // WAITING_A branch fired on the very next tick, recorded a drop using
+        // whatever _lastResult happened to be holding, started module B, and
+        // logged the whole thing as a SUCCESS with zero motion. The shipped
+        // default mission is exactly that case: 10 waypoints, 5 doors.
+        //
+        // startManualPair() below has always guarded this correctly. The GPS
+        // path simply never got the same check — the two trigger paths
+        // disagreed, which is the same shape of bug as the two e-stop paths.
+        if (!_modA.startDrop()) {
+            Serial.printf("[DLE] *** WP%d NOT DROPPED — module A has no doors "
+                          "left. Mission cannot continue. ***\n", dp.id);
+            _recordDrop(dp.id, 0, _modA.doorsDropped(), cur,
+                        DropResult::ALREADY_DONE);
+            return;   // _phase stays IDLE; missionComplete() now ends the run
+        }
+
         _sm.setDropping(true);
         Serial.printf("[DLE] Module A — drop %d\n", dp.id);
-        _modA.startDrop();
         _phase = Phase::WAITING_A;
     }
+}
+
+bool DropLogicEngine::launcherEmpty() const {
+    return _modA.isEmpty() || _modB.isEmpty();
 }
 
 uint8_t DropLogicEngine::_currentDropId() const {
@@ -157,13 +194,18 @@ void DropLogicEngine::_recordDrop(uint8_t drop_id, uint8_t module_idx,
     // drop as TIMEOUT — a different failure with a different cause, and the
     // log is the only record anyone gets after a flight.
     const char* rs = "TIMEOUT";
-    if      (result == DropResult::OK)      rs = "OK";
-    else if (result == DropResult::ABORTED) rs = "ABORTED";
-    else if (result == DropResult::FAULT)   rs = "FAULT";
+    if      (result == DropResult::OK)           rs = "OK";
+    else if (result == DropResult::ABORTED)      rs = "ABORTED";
+    else if (result == DropResult::FAULT)        rs = "FAULT";
+    else if (result == DropResult::ALREADY_DONE) rs = "EMPTY";
     strncpy(evt.result_str, rs, sizeof(evt.result_str));
     _log.logDrop(evt);
 }
 
 bool DropLogicEngine::missionComplete() const {
-    return _next_drop_idx >= _cfg.config().drop_count;
+    // launcherEmpty() is the defect (c) half: with more waypoints than doors,
+    // the run must END when the doors run out rather than keep evaluating
+    // waypoints it can never service. Without it the engine would re-trigger
+    // at the same waypoint every loop and spam failure rows.
+    return _next_drop_idx >= _cfg.config().drop_count || launcherEmpty();
 }

@@ -1182,6 +1182,43 @@ auto-disarm. Unchanged.
 **(c) remains OPEN and unconfirmed** — it needs more waypoints than the device
 has saved. The flight-build `#warning` now names only (c).
 
+### Defect (c) — FIXED, but NEVER REPRODUCED. Read this before trusting it.
+
+`_modA.startDrop()`'s false return was ignored at the GPS trigger, and
+`_phase` was set to `WAITING_A` regardless. With no drop actually started, the
+`WAITING_A` branch fired on the next tick, recorded a drop using whatever
+`_lastResult` happened to hold, started module B, and logged a full SUCCESS
+with zero motion. The shipped default mission is exactly that case: 10
+waypoints, 5 doors.
+
+**`startManualPair()` has always guarded this correctly** — it checks
+`_modA.isEmpty()` and refuses. The GPS path simply never got the same check.
+Two trigger paths that disagreed: the same shape of bug as the two e-stop
+paths found an hour earlier, and worth noticing as a pattern in this codebase.
+
+The fix:
+- the GPS trigger now honours `startDrop()`'s return, logs a real `EMPTY` row
+  and leaves `_phase` at IDLE;
+- module B's start in the `WAITING_A` branch is checked the same way — B can
+  run out independently of A, so the trigger-path check does not cover it;
+- `missionComplete()` now also returns true when `launcherEmpty()`. With more
+  waypoints than doors the run must END when the doors run out, rather than
+  re-triggering at the same waypoint every loop and spamming failure rows;
+- `DropResult::ALREADY_DONE` renders as `EMPTY` in the log instead of being
+  relabelled `TIMEOUT`.
+
+**It has NEVER been reproduced.** The device has ONE waypoint saved, and the
+defect needs more waypoints than doors. Everything above is reasoning from the
+code, which is exactly the standard of evidence that (a), (b) and (e) had
+before the bench run — and that run showed (a) was *worse* than the reading
+suggested, and turned up (e), which no reading had found at all.
+
+**So do not treat (c) as closed.** Run plan step 12. To make that possible,
+either add waypoints from a phone on the `SmartLauncher` AP, or reseed
+`mission.json` by erasing LittleFS — in which case put the measured values
+(A open=1470 stop=1670 travel=580, B open=1300 stop=1500 travel=350, RC
+SAFE<=1300 FIRE>=1700) into `MissionDefault.h` FIRST, or they are lost.
+
 ### Deliberately NOT done, pending measurement
 
 Moving position ingest and logging to the idle core
@@ -1506,8 +1543,8 @@ servo-runaway safety incident.
            overshoot measurement) - DONE, verified on hardware: +0ms overshoot.
            Platform migration to a Pi Zero 2 W evaluated and REJECTED.
 - Phase 3f E-stop defects (a), (b) + newly found (e) - CONFIRMED on hardware,
-           FIXED, and re-verified. Both e-stop entry points unified. (c) still
-           open.
+           FIXED, and re-verified. Both e-stop entry points unified.
+           (c) FIXED by code reading only - NEVER reproduced, needs step 12.
 - Phase 4  MAVLink position (Cube Orange TELEM2) - pending
 - Phase 5  Python config tool (import QGC/UgCS missions -> mission.json) - pending
 - Phase 6  Testing (bench -> static drops -> low altitude -> full mission) - pending

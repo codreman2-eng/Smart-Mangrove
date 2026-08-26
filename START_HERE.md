@@ -350,9 +350,10 @@ could prove or disprove them rather than someone "fixing" a problem that may
 not exist.
 
 **UPDATE 2026-08-25 — the run happened. #1, #2 and #4 were CONFIRMED REAL
-and are now FIXED and re-verified on hardware. #3 is still open and still
-unconfirmed. So: the only bug left in deliberately is #3, and it needs a
-mission with more waypoints than the board currently has saved. See
+and are now FIXED and re-verified on hardware. #3 has also been fixed, but by
+reading the code — it was never reproduced, because it needs a mission with
+more waypoints than the board has saved. Treat #3 as "probably fixed, not
+proven": run step 12 of the validation plan when you can. See
 `PROJECT_HANDOFF.md` Phase 3e for the traces.**
 
 1. **Emergency stop may fire Module B.** If you press stop during an

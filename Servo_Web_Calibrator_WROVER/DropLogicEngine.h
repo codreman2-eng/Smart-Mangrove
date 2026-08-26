@@ -57,8 +57,17 @@ public:
     // not serviced, and must still be pending when the operator re-arms.
     void abort();
 
-    // True when all drops are complete
+    // True when no further drop is possible — either every waypoint has been
+    // serviced, or the launcher is physically out of doors.
+    //
+    // The second half is part of the defect (c) fix. A mission with more
+    // waypoints than doors is not "still running" once the cover is spent;
+    // it is over, and the honest thing is to say so and disarm rather than
+    // keep evaluating waypoints that can never be serviced.
     bool missionComplete() const;
+
+    // True once either module has spent all its doors.
+    bool launcherEmpty() const;
 
     // True while an automatic A-then-B sequence is in progress — used to
     // guard manual drop buttons from firing mid-sequence.

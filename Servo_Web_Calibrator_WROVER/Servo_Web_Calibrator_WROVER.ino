@@ -89,7 +89,7 @@
 #include "RcPwmInput.h"
 
 #if !SIM_MODE
-#warning "FLIGHT BUILD: defects (a) e-stop fires Module B, (b) e-stop cannot leave DROPPING and (e) aborted drop logs as OK were CONFIRMED on hardware 2026-08-25 and are FIXED. Defect (c) 10 waypoints vs 5 doors logs false OK is still OPEN and still unconfirmed - it needs more waypoints than the device has saved. See SIM_MODE_VALIDATION_PLAN.md step 12."
+#warning "FLIGHT BUILD: defects (a) e-stop fires Module B, (b) e-stop cannot leave DROPPING and (e) aborted drop logs as OK were CONFIRMED on hardware 2026-08-25 and are FIXED and re-verified. Defect (c) 10 waypoints vs 5 doors is now FIXED TOO, but by code reading only - it has NEVER been reproduced, because it needs a mission with more waypoints than doors and the device has one waypoint saved. Run SIM_MODE_VALIDATION_PLAN.md step 12 before trusting it. Servos have still never been driven by this firmware."
 #endif
 
 // ─── Objects ────────────────────────────────────────────────────────────
