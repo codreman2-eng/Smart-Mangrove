@@ -1182,7 +1182,12 @@ auto-disarm. Unchanged.
 **(c) remains OPEN and unconfirmed** — it needs more waypoints than the device
 has saved. The flight-build `#warning` now names only (c).
 
-### Defect (c) — FIXED, but NEVER REPRODUCED. Read this before trusting it.
+### Defect (c) — FIXED; symptoms proven unreachable 2026-09-01 (see PHASE 3g)
+
+**The "never reproduced" warning below is now RESOLVED — but not the way it
+expected.** The run confirmed none of (c)'s symptoms can occur, while showing
+the inner guard is unreachable from the GPS path by construction. Read PHASE 3g
+before relying on either half. The original reasoning is kept below as written.
 
 `_modA.startDrop()`'s false return was ignored at the GPS trigger, and
 `_phase` was set to `WAITING_A` regardless. With no drop actually started, the
@@ -1233,6 +1238,125 @@ them now would also mean never learning which fix was the one that worked.
 If overshoot is inside +/-10% of travel_ms, stop here. If it is not, do the
 esp_timer change first — it targets the drive window directly — and the core
 split only if that still is not enough.
+
+---
+
+## PHASE 3g (2026-09-01): DEFECT (c) CLOSED, AND A LATENT SERVO HAZARD
+
+**Status: RUN ON HARDWARE (COM10, SIM build). Defect (c)'s symptoms are proven
+unreachable. Plan steps 6, 7a and 12 now have observed results. Housekeeping
+done. One item turned out to be a false alarm.**
+
+### Getting waypoints onto the device \u2014 why serial, not HTTP
+
+Step 12 needs more waypoints than doors, and the device had ONE. Neither the
+radius nor the waypoint list can be written over serial: `wp` is read-only. The
+`/mission` HTTP API does all of it, but reaching it means joining the
+`SmartLauncher` AP \u2014 and this laptop has a single Wi-Fi radio, so it must
+abandon its own network, and its internet, to get there.
+
+Two things went wrong, and the second one matters:
+
+1. **Windows roams back.** `FABLAB5Ghz` is an auto-connect profile and kept
+   reclaiming the radio. Fixable with `netsh wlan set profileparameter
+   name=FABLAB5Ghz connectionmode=manual`; restored afterwards.
+2. **The HTTP API is not reliable enough to script against.** With roaming
+   disabled and the AP associated at 99% signal, `curl` returned
+   `connection refused` more often than `200`, and ping lost 20-30% of packets.
+   `server.handleClient()` runs inside `loop()`, and `loop()` is stalling
+   **100-182ms** \u2014 the Phase 3e residual stall, now attributed by section to
+   `telemetry` and `events`. A web server starved that long drops TCP
+   handshakes.
+
+**That is a second, previously unrecorded cost of the Phase 3e residual
+stall.** It was understood as a drop-timing risk; it is also making the
+dashboard unusable, which is part of why the browser UI has never been
+exercised. It strengthens the case for the deferred `xTaskCreatePinnedToCore`
+work: that stall now hurts two things, not one.
+
+**A correction worth recording:** opening the serial port does **not** reset the
+board. That was assumed during this session and it is wrong \u2014 `resync` counters
+climb continuously across separate script invocations, which cannot happen
+across a reset. Only the explicit DTR/RTS sequence in `bench_serial.py`'s
+`reset()` resets it. Serial and the HTTP dashboard can be used simultaneously.
+
+### The fix: SIM_MODE-gated waypoint commands over serial
+
+`wpadd <lat> <lon> [r] [alt]` | `wpradius <idx|all> <r>` | `wpclear` | `wpsave`
+
+Guarded by `calibrationBlocked()` \u2014 the same armed/dropping rule the HTTP route
+enforces, because the engine indexes into the drop list while armed. Gated
+`#if SIM_MODE` so a flight build cannot carry a waypoint editor that bypasses
+the dashboard's two-tap confirm. `wpradius` takes a **1-based** index to match
+what `wp` prints; index 0 underflows to 255 and is rejected by
+`setDropRadius`'s bounds check rather than wrapping.
+
+### Housekeeping \u2014 one item was a false alarm
+
+- **The flight log was NOT full.** 460KB against a 1.1MB cap, no `FULL` flag.
+  The standing "log is full, nothing is being recorded" note was stale. It was
+  deliberately left intact: it holds the 2026-08-25/26 e-stop verification runs,
+  and clearing it to fix a problem that did not exist would have destroyed
+  evidence.
+- **Radius 1.0m -> 5.0m** on all 10 waypoints, saved.
+  **5m and not 10m, on purpose.** The trigger fires on circle ENTRY
+  (`DropLogicEngine.cpp:101`), not at closest approach, so it fires
+  `sqrt(r^2 - d^2)` metres early where `d` is cross-track error. Bigger radius
+  = earlier drop. The floor is set by needing the chord `2*sqrt(r^2 - d^2)` to
+  exceed one sample step: negligible on the 50Hz OSDK link, but 5m per sample
+  on the 1Hz GNSS fallback at 5 m/s. 5m is about the smallest value that
+  survives that fallback; 10m would have fired 10m early for no benefit.
+  Revisit once the impact predictor lands \u2014 see PHASE 4 RESEARCH, which is
+  exactly the change that turns `radius` from a fudge factor into a real
+  accuracy tolerance.
+
+### RESULT \u2014 defect (c): symptoms unreachable, inner guard never executed
+
+10 waypoints against 5 doors, driven by `tools/bench_defect_c.py`:
+
+    WP1..WP4   A 580ms +0ms, B 350ms +0ms, doorsA/B -> 1,2,3,4
+    WP5        [ACT] Door 5 - limit switch: TIMEOUT (drove 1740 ms)   module A
+               [ACT] Door 5 - limit switch: TIMEOUT (drove 1050 ms)   module B
+               [MAIN] *** MISSION COMPLETE - all drops done ***
+               doorsA=5 doorsB=5 dropIdx=5 of 10
+    WP6        simpos injected - NO [DLE] output at all.
+               No evaluation, no drop, no module B start.
+
+**None of (c)'s symptoms occur.** No zero-motion SUCCESS row, no spurious
+module B start, and the five unserviced waypoints are correctly left pending.
+
+**But the inner guard was never executed, and cannot be.** `missionComplete()`
+is checked at `DropLogicEngine.cpp:73`, before any waypoint evaluation, and
+`launcherEmpty()` is `_modA.isEmpty() || _modB.isEmpty()` \u2014 so the instant
+EITHER module empties, the run ends. The GPS-trigger fix at
+`DropLogicEngine.cpp:123` (honouring `startDrop()`'s false return) is therefore
+unreachable from the GPS path **by construction**. No door-count configuration
+reaches it, because emptying either module ends the mission first.
+
+So (c) closes differently from what was expected: not "the guard fired
+correctly" but "the outer guard makes the defect unreachable, and the inner one
+is defence-in-depth that this path cannot exercise." Record it that way. Note
+also that no `EMPTY` row is ever written \u2014 the earlier prediction that one would
+appear was wrong for the same reason.
+
+### LATENT HAZARD found by the same run \u2014 read before SIM_MODE goes to 0
+
+Door 5 of **both** modules ended in `limit switch: TIMEOUT`: module A drove
+**1740ms against a 580ms target**, module B **1050ms against 350ms**. Exactly 3x
+in both cases. The last door waits for limit-switch confirmation, and the
+switches on GPIO 32/33 are not wired on the bench, so it falls through to a
+3 x travel_ms timeout.
+
+Harmless in SIM. **Not harmless with servos connected** \u2014 the final door of
+every module would drive three times its intended travel, overshooting the cover
+by roughly three door pitches. That is the same class as the servo-runaway
+incident.
+
+**Wire the limit switches before flipping SIM_MODE to 0.** Neither this document
+nor `SIM_MODE_VALIDATION_PLAN.md` listed that as a prerequisite for servo
+bring-up. It is one. (The plan's step 7a did predict the 1740ms figure, so the
+behaviour was expected \u2014 but its consequence for real servos was never drawn
+out.)
 
 ---
 
@@ -1572,7 +1696,7 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
 
 ## CURRENT EXACT STATE / WHERE WE ARE
 
-*(Last reviewed 2026-08-25. Newest commit is `5da789c`, 2026-08-13.)*
+*(Last reviewed 2026-09-01, after the PHASE 3g bench run.)*
 
 - Board settings correct: ESP32 Wrover Module, 8MB flash, QIO, 80MHz,
   Default 4MB with spiffs, upload 921600. **The COM port moves between
@@ -1598,13 +1722,17 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
   build (and read the `#warning` it emits).
 - **The servos have still never been driven by this firmware. Not once.**
   Everything proven so far was proven on LEDs with the servo UBEC unplugged.
-- **The plan's results table is still empty.** Steps 9, 10 and 12 — the ones
-  that confirm defects (a), (b) and (c) — have not been run, and neither has
-  the multi-door sequence (steps 6, 7a, 7b) or the guard toast (step 8).
-- Git: work is on branch **`sim-mode-and-rc-trigger`**, now **17 commits ahead
-  of `main` and PUSHED to origin** (`origin/sim-mode-and-rc-trigger` is level
-  with local). Merge to main when the bench run has
-  validated the rest.
+- **The plan's results table is now over half filled.** Steps 1, 3, 4, 6, 7a,
+  9, 10, 11 and 12 all have observed results. Still open: 2, 5, 7b, 8 (browser
+  and limit-switch), and the entire RC block (B1-B4, 13-20).
+- **The saved mission is now 10 waypoints at r=5.0m**, built around the real
+  coordinate 9.0222514, -79.5322405 with ~22m spacing so the circles stay
+  disjoint. It is the defect (c) fixture; it is NOT a real plot.
+- **The flight log is NOT full** — ~474KB of a 1.1MB cap. Earlier notes saying
+  otherwise were stale.
+- Git: work is on branch **`sim-mode-and-rc-trigger`**. Merge to main when the
+  bench run has validated the rest — the RC path in particular has still never
+  seen a real signal.
 
 ### Compile status (arduino-cli, core 3.3.8 — NOT PlatformIO)
 
@@ -1612,8 +1740,11 @@ Measured 2026-08-25, after the Phase 3e latency work:
 
 | Build | Flash | RAM |
 |---|---|---|
-| Dashboard, SIM_MODE 1 | 1,091,428 (83%) | 49,944 (15%) |
+| Dashboard, SIM_MODE 1 | 1,093,872 (83%) | 49,984 (15%) |
 | Dashboard, SIM_MODE 0 | 1,097,427 (83%) | 50,084 (15%) |
+
+SIM_MODE 1 measured 2026-09-01 after the PHASE 3g waypoint commands
+(+2,444 bytes flash, +40 bytes RAM). Zero warnings from project code.
 
 **Zero warnings from project code, both builds** (compiled with
 `--warnings default`). The only diagnostic emitted is the intentional
@@ -1638,26 +1769,29 @@ picks up the same esp32 core 3.3.8 the IDE uses. Build:
 
 ## IMMEDIATE NEXT GOAL
 
-*(Rewritten 2026-08-26. Steps 1, 3, 4, 9, 10 and 11 now PASS; defects (a),
-(b), (e) are confirmed-and-fixed and (c) is fixed-but-unproven.)*
+*(Rewritten 2026-09-01. All four planted defects are now closed: (a), (b) and
+(e) confirmed-and-fixed on hardware, (c)'s symptoms proven unreachable in
+PHASE 3g.)*
 
 **Three things are now in front, in this order:**
 
-1. **Confirm defect (c)** — plan step 12, the only planted defect never
-   reproduced. Needs a mission with more waypoints than doors; the device has
-   ONE waypoint saved. Add waypoints from a phone on the `SmartLauncher` AP,
-   or reseed `mission.json` by erasing LittleFS — in which case put the
-   measured values (A open=1470 stop=1670 travel=580, B open=1300 stop=1500
-   travel=350, RC SAFE<=1300 FIRE>=1700) into `MissionDefault.h` FIRST or they
-   are lost. Steps 6, 7a and 12 all unlock together, and all are
-   serial-observable via `tools/bench_serial.py`.
-2. **The ballistics work** — see PHASE 4 RESEARCH above. Start with
+1. **The ballistics work** — see PHASE 4 RESEARCH below. Start with
    `OsdkPositionSource.cpp:144`, which parses DJI's height-above-takeoff and
-   then discards it. This is worth ~6m of landing accuracy, which is more than
-   everything else on this list put together.
+   then discards it, then decode VELOCITY. **VELOCITY is bit 3 and its size is
+   already in `FIELD_SZ[6]`**, so the existing offset-from-flag loop reaches it
+   with no new layout work and no fresh capture — unlike STATUS (bit 11), which
+   needs GPS and RC sized first. Worth ~6m of landing accuracy, more than
+   everything else on this list combined, and it is the change that makes
+   `radius` mean something.
+2. **Wire the limit switches** — promoted to a blocker by PHASE 3g. Until they
+   are wired, the last door of each module overdrives 3x. This gates ALL servo
+   work, and it also unlocks plan step 7b.
 3. **The rest of the plan needs a human at the bench** — every LED criterion,
-   steps 2 and 8 (browser), 7b (limit switch), and the whole RC path, which
-   still needs the A3 F-channel voltage measured first.
+   steps 2 and 8 (browser), and the whole RC path, which still needs the A3
+   F-channel voltage measured first. Note PHASE 4 RESEARCH's finding that the
+   pilot trigger could come over the existing OSDK link via the `gear` switch,
+   which needs no wiring and none of the A3 output-voltage risk — worth
+   settling with `osdk_sniff.py --diff` before soldering anything to GPIO 35.
 
 Everything below still applies. Follow `SIM_MODE_VALIDATION_PLAN.md` — it has
 the pre-run checklist, per-step pass criteria and a partly-filled results
@@ -1669,10 +1803,9 @@ that doesn't exist yet). Do the software half first — it is cheap, safe,
 and gates everything else.
 
 ### Software half — no servos, no aircraft
-0. Housekeeping first: **the flight log is full** (1.1MB cap reached), so
-   nothing is being recorded until it is cleared — Control tab Clear twice,
-   or the `clearlog` serial command. And **set the waypoint radius to 10m**;
-   the saved 1.0m is narrower than GPS noise.
+0. Housekeeping: **DONE 2026-09-01.** The log was never actually full
+   (~474KB of 1.1MB) and was left intact. Radius is now 5.0m on all 10
+   waypoints — see PHASE 3g for why 5 and not 10.
 1. Wire the two indicator LEDs (GPIO 14 announce, GPIO 27 yellow wait,
    330R each to GND). **Leave the servo UBEC unplugged.**
 2. Flash the dashboard with `SIM_MODE 1` and work the plan's results table.
@@ -1734,7 +1867,11 @@ servo-runaway safety incident.
            Platform migration to a Pi Zero 2 W evaluated and REJECTED.
 - Phase 3f E-stop defects (a), (b) + newly found (e) - CONFIRMED on hardware,
            FIXED, and re-verified. Both e-stop entry points unified.
-           (c) FIXED by code reading only - NEVER reproduced, needs step 12.
+- Phase 3g Defect (c) CLOSED - symptoms proven unreachable on hardware, though
+           the inner guard is unreachable by construction and never ran.
+           SIM-gated waypoint serial commands added. Housekeeping done.
+           Found a LATENT SERVO HAZARD: unwired limit switches make the last
+           door of each module overdrive 3x. Blocks servo bring-up.
 - Phase 4  MAVLink position (Cube Orange TELEM2) - pending
 - Phase 5  Python config tool (import QGC/UgCS missions -> mission.json) - pending
 - Phase 6  Testing (bench -> static drops -> low altitude -> full mission) - pending
@@ -1752,6 +1889,11 @@ servo-runaway safety incident.
   reasoning for every unsafe pin recorded inline.
 - `tools/osdk_sniff.py` — PC-side DJI OSDK broadcast decoder and `--diff` field
   locator. Use it when the A3's broadcast config changes.
+- `tools/bench_defect_c.py` — plan step 12. Resets the board, arms, walks a
+  10-waypoint / 5-door mission through `simpos`, and shows what happens when
+  the doors run out. It is what closed defect (c), and it surfaced the
+  limit-switch overdrive hazard as a side effect. Re-run it after any change to
+  `DropLogicEngine`'s completion logic.
 - `tools/bench_serial.py` — PC-side serial bench driver. `boot`, `listen`,
   `cmd`, `drop` and `estop` modes. The `estop` mode schedules the emergency
   stop INSIDE module A's drive window, which a human cannot reliably do by

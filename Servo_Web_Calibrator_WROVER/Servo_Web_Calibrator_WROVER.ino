@@ -1084,6 +1084,10 @@ static void handleSerialLine(String s) {
     if (cmd == "help" || cmd == "?") {
         Serial.println(F("commands: status | clearlog | arm | disarm | stop | wp"
                          " | simpos <lat> <lon> | simclear"));
+#if SIM_MODE
+        Serial.println(F("  bench (SIM only): wpadd <lat> <lon> [r] [alt] | "
+                         "wpradius <idx|all> <r> | wpclear | wpsave"));
+#endif
         return;
     }
     if (cmd == "status") {
@@ -1126,6 +1130,98 @@ static void handleSerialLine(String s) {
         return;
     }
     if (cmd == "simclear") { simSource.clear(); return; }
+
+    // ── Bench-only waypoint editing ───────────────────────────────────────
+    // The HTTP /mission API already does all of this, but it is reachable
+    // ONLY from the SmartLauncher AP — and a laptop with a single Wi-Fi radio
+    // has to abandon its own network (and its internet) to get there. Worse,
+    // server.handleClient() runs inside loop(), so the 100-150ms telemetry
+    // stalls drop TCP handshakes outright: scripted HTTP against this board
+    // returned "connection refused" more often than 200. Serial has neither
+    // problem, and bench work is already scripted through it.
+    //
+    // SIM_MODE-gated on purpose: a flight build must not carry a waypoint
+    // editor that bypasses the dashboard's two-tap confirm.
+    if (cmd == "wpadd" || cmd == "wpradius" || cmd == "wpclear" || cmd == "wpsave") {
+        // Same rule the HTTP route enforces — the engine indexes into this
+        // list while armed, so editing it mid-mission is the stale-click hazard.
+        if (calibrationBlocked()) {
+            Serial.println(F("blocked: armed/dropping"));
+            return;
+        }
+
+        String tok[4];
+        uint8_t nt = 0;
+        {
+            String r = rest; r.trim();
+            while (nt < 4 && r.length()) {
+                int sp2 = r.indexOf(' ');
+                if (sp2 < 0) { tok[nt++] = r; break; }
+                tok[nt++] = r.substring(0, sp2);
+                r = r.substring(sp2 + 1); r.trim();
+            }
+        }
+
+        if (cmd == "wpclear") {
+            cfg.clearDrops();
+            if (engine) engine->resetProgress();
+            Serial.println(F("[CFG] waypoints cleared (RAM only - use wpsave)"));
+            return;
+        }
+        if (cmd == "wpsave") {
+            bool ok = cfg.save();
+            Serial.println(ok ? F("[CFG] saved to /mission.json")
+                              : F("[CFG] *** SAVE FAILED ***"));
+            return;
+        }
+        if (cmd == "wpadd") {
+            if (nt < 2) {
+                Serial.println(F("usage: wpadd <lat> <lon> [radius_m] [alt_m]"));
+                return;
+            }
+            double lat = tok[0].toDouble();
+            double lon = tok[1].toDouble();
+            // Defaults chosen to be usable, not merely legal: 5m is the
+            // smallest radius that still survives a fallback to the 1Hz GNSS
+            // source at 5m/s (chord must exceed one sample step).
+            float  r   = (nt >= 3) ? tok[2].toFloat() : 5.0f;
+            float  alt = (nt >= 4) ? tok[3].toFloat() : 8.0f;
+            if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+                Serial.println(F("lat/lon out of range"));
+                return;
+            }
+            r = constrain(r, 0.5f, 100.0f);
+            if (!cfg.addDrop(lat, lon, alt, r)) {
+                Serial.printf("waypoint list full (max %d)\n", cfg.maxDrops());
+                return;
+            }
+            if (engine) engine->resetProgress();
+            return;                       // addDrop() already prints [CFG] +WPn
+        }
+        if (cmd == "wpradius") {
+            if (nt < 2) {
+                Serial.println(F("usage: wpradius <idx|all> <radius_m>"));
+                return;
+            }
+            float r = constrain(tok[1].toFloat(), 0.5f, 100.0f);
+            const MissionConfig& mc = cfg.config();
+            if (tok[0] == "all") {
+                for (uint8_t i = 0; i < mc.drop_count; i++) cfg.setDropRadius(i, r);
+                Serial.printf("[CFG] radius=%.1fm on all %d waypoints\n",
+                              r, mc.drop_count);
+                return;
+            }
+            // 1-based to match what `wp` prints. idx 0 underflows to 255 and
+            // is rejected by setDropRadius's bounds check rather than wrapping.
+            int idx1 = tok[0].toInt();
+            if (!cfg.setDropRadius((uint8_t)(idx1 - 1), r)) {
+                Serial.println(F("bad index - `wp` lists them, 1-based"));
+                return;
+            }
+            Serial.printf("[CFG] WP%d radius=%.1fm\n", idx1, r);
+            return;
+        }
+    }
 #endif
     Serial.printf("unknown '%s' - try 'help'\n", cmd.c_str());
 }

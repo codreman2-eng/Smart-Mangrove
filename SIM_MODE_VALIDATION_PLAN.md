@@ -342,14 +342,14 @@ the GPIO 2 and GPIO 9/10 bugs.
 | 3 | ARM | ARMED, 2Hz | **PASS** 2026-08-25 | via `arm` serial cmd; LED rate NOT observed |
 | 4 | DROP A door 1 | 580ms ±10%, 1 blip — read it straight off the `[ACT]` line, which now prints `target / actual / +/-drift` and flags `*** OVER 10% ***` itself (Phase 3e). No slo-mo needed for this one. | **PASS** 2026-08-25 | +0ms x3 runs; blip count NOT observed |
 | 5 | `/status` during drop | no stall | | |
-| 6 | Doors 2–4 | counters 2,3,4 | | |
-| 7a | Door 5 no switch | TIMEOUT @1740ms | | |
+| 6 | Doors 2–4 | counters 2,3,4 | **PASS** 2026-09-01 | doorsA/B → 2,3,4; every window +0ms (A 580, B 350). Via `tools/bench_defect_c.py` |
+| 7a | Door 5 no switch | TIMEOUT @1740ms | **PASS** 2026-09-01 | exactly as predicted: A `TIMEOUT (drove 1740 ms)`, B `TIMEOUT (drove 1050 ms)` — both 3× travel_ms. **See the hazard note below** |
 | 7b | Door 5 switch hit | OK, early stop | | |
 | 8 | Guard toast | `409 blocked` | | |
 | 9 | E-STOP mid-drop | LED off; state? | **(b) CONFIRMED then FIXED** 2026-08-25 | was `state=3 dropping=1` 68ms after the stop; now `state=1 armed=0 dropping=0`, transition 3->1 direct. LED NOT observed |
 | 10 | E-STOP mid-sequence | **B must NOT fire** | **(a) CONFIRMED then FIXED** 2026-08-25 | B fired a full 350ms window; after the fix B never starts, `doorsB=0`, waypoint stays pending |
 | 11 | Auto-fire A→B | full sequence | **PASS** 2026-08-25 | A 580ms, B 350ms, logged, auto-disarm |
-| 12 | Drop 6 of 10 | **must NOT log OK** | **NOT RUN** | (c) was FIXED 2026-08-25 by code reading, never reproduced. Needs >5 waypoints; device has 1. Expect an `EMPTY` row and the mission to end, not a false OK |
+| 12 | Drop 6 of 10 | **must NOT log OK** | **PASS (with a caveat)** 2026-09-01 | run ends at WP5 with `MISSION COMPLETE`; WP6 produces **no `[DLE]` output at all**. No false OK, no B start, 5 waypoints left pending. But no `EMPTY` row either — `missionComplete()` short-circuits at line 73 before the guard at line 123, so the inner guard was never executed and is unreachable by construction. See PROJECT_HANDOFF.md PHASE 3g |
 | B1 | RC frame rate | ~50 Hz, no glitch climb | | |
 | B2 | RC full sweep | span ≥200µs | | |
 | B3 | RC suggest | bands match switch positions | | |
@@ -362,6 +362,25 @@ the GPIO 2 and GPIO 9/10 bugs.
 | 18 | RC re-fire | second pair fires | | |
 | 19 | RC cold start at FIRE | **must NOT fire** | | |
 | 20 | RC signal loss | **must NOT fire** | | |
+
+---
+
+## 7b. HAZARD surfaced by the 2026-09-01 run — read before SIM_MODE goes to 0
+
+Step 7a's `TIMEOUT @1740ms` was predicted here and observed exactly. What was
+not drawn out is what it means once servos are attached.
+
+The last door of each module waits for limit-switch confirmation. With the
+switches on GPIO 32/33 unwired — which is how the bench has always been — it
+falls through to a **3× travel_ms** timeout: module A drove **1740ms against a
+580ms target**, module B **1050ms against 350ms**.
+
+In SIM that is a log line. With servos connected it is the final door of every
+module driving three times its intended travel, overshooting the cover by
+roughly three door pitches. Same class as the servo-runaway incident.
+
+**Wire the limit switches before flipping SIM_MODE to 0.** This is a
+prerequisite for servo bring-up and was not previously listed as one.
 
 ---
 
