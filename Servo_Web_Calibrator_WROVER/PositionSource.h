@@ -9,6 +9,30 @@ struct Position {
     float   hdop     = 99.0f;   // horizontal dilution of precision (lower = better)
     uint8_t satellites = 0;
     bool    valid    = false;
+
+    // ── Ballistics inputs (Phase 4) ──────────────────────────────────────
+    // A propagule keeps the aircraft's horizontal velocity while it falls, so
+    // releasing AT the waypoint lands it downrange - 6.4m at 5 m/s from 8m,
+    // twice the target radius. Predicting the impact point needs height above
+    // the drop surface and a velocity vector; both are already on the A3's
+    // wire and were simply not being read.
+    //
+    // ONLY OsdkPositionSource fills these. GNSS and SIM leave them invalid and
+    // the predictor degrades cleanly to today's release-at-waypoint behaviour,
+    // which is also exactly what it does at zero velocity.
+    float   height_m     = 0.0f;   // height above TAKEOFF point, NOT above ground
+    bool    height_valid = false;
+
+    // Ground-frame velocity in NED. vd is positive DOWNWARD (descending).
+    // See OsdkPositionSource.cpp for the sign convention and why it is not
+    // yet verified against a real climb.
+    float   vn_mps    = 0.0f;
+    float   ve_mps    = 0.0f;
+    float   vd_mps    = 0.0f;
+    bool    vel_valid = false;
+
+    // Horizontal speed, the quantity that actually drives the fall carry.
+    float horizontalSpeed() const { return sqrtf(vn_mps * vn_mps + ve_mps * ve_mps); }
 };
 
 // Pure abstract interface — both GNSS and MAVLink implement this

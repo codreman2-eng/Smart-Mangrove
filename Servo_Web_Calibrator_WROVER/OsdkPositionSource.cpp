@@ -40,6 +40,22 @@ static const uint8_t FIELD_SZ[6] = {
 };        //                     float32 height, uint8 health)
 
 static const uint8_t  FLAG_POSITION = 5;
+static const uint8_t  FLAG_VELOCITY = 3;
+
+// DJI's broadcast velocity is a ground-frame vector; the horizontal pair maps
+// to North/East. The VERTICAL SIGN IS NOT VERIFIED on this aircraft, so it is
+// named rather than assumed silently.
+//
+// It matters less than it looks: vertical velocity only enters fall time, and
+// only second-order. At 8m a 1 m/s vertical error moves the impact point about
+// 1m, against the ~6.4m the horizontal terms are correcting. A wrong sign here
+// degrades accuracy; it cannot send a drop somewhere absurd.
+//
+// TO VERIFY (no flight needed beyond a climb): watch `vd` against the trend of
+// the barometric `alt_m` decoded below. Climbing must give NEGATIVE vd. If they
+// disagree, flip this constant. Do that before trusting a drop from a
+// descending or climbing pass.
+static const bool     OSDK_VZ_IS_UP = true;
 static const uint8_t  HDR_LEN       = 12;
 static const uint8_t  SOF           = 0xAA;
 static const double   RAD2DEG       = 57.29577951308232;
@@ -153,10 +169,53 @@ bool OsdkPositionSource::_decode(const uint8_t* p, uint16_t n) {
     _last.satellites = 0;              // sat count lives in the GPS field
     _last.hdop       = (health >= 3) ? 1.0f : 99.0f;
 
+    // `height` is DJI's height above the TAKEOFF point, and it was parsed here
+    // and thrown away for the whole of Phase 3d because Position had nowhere to
+    // put it. It is the exact quantity the fall-time calculation needs, and it
+    // was already on the wire — one struct member and one assignment.
+    //
+    // NOTE it is height above TAKEOFF, not above the drop surface. On a tidal
+    // mangrove flat that difference is real; a per-waypoint ground_offset_m
+    // belongs in mission.json, because the operator knows it and the aircraft
+    // does not.
+    _last.height_m     = height;
+    _last.height_valid = (health >= 3) && isfinite(height) &&
+                         height > -10.0f && height < 500.0f;
+
     // A frame arriving is NOT a fix. Indoors the A3 broadcasts happily with
     // lat/lon at exactly 0.0 and health 0 — accepting that would hand drop
     // logic a "valid" position off the coast of Africa. Require a non-zero
     // fix AND a usable health value.
+    // ── VELOCITY (bit 3) ────────────────────────────────────────────────
+    // Free to reach: bit 3 sits BELOW POSITION, so its size is already in
+    // FIELD_SZ and the same offset-from-flag walk finds it with no new layout
+    // work and no fresh capture. (STATUS, bit 11, is NOT free — it needs GPS,
+    // RTK, MAG, RC and GIMBAL sized first.)
+    _last.vel_valid = false;
+    if (flag & (1u << FLAG_VELOCITY)) {
+        uint16_t voff = 4;
+        for (uint8_t b = 0; b < FLAG_VELOCITY; b++)
+            if (flag & (1u << b)) voff += FIELD_SZ[b];
+
+        if (voff + FIELD_SZ[FLAG_VELOCITY] <= n) {
+            float vx, vy, vz;
+            memcpy(&vx, p + voff,     4);
+            memcpy(&vy, p + voff + 4, 4);
+            memcpy(&vz, p + voff + 8, 4);
+            // DJI packs this as `health : 1` plus 7 reserved bits.
+            const bool vhealth = (p[voff + 12] & 0x01) != 0;
+
+            const float vd = OSDK_VZ_IS_UP ? -vz : vz;
+            if (vhealth && isfinite(vx) && isfinite(vy) && isfinite(vz) &&
+                fabsf(vx) < 50.0f && fabsf(vy) < 50.0f && fabsf(vz) < 50.0f) {
+                _last.vn_mps    = vx;
+                _last.ve_mps    = vy;
+                _last.vd_mps    = vd;
+                _last.vel_valid = true;
+            }
+        }
+    }
+
     bool fix = (health >= 3) && (lat != 0.0 || lon != 0.0);
     if (fix) {
         _last.lat_deg = lat * RAD2DEG;

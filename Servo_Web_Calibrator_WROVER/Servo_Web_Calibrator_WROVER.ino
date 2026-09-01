@@ -87,6 +87,7 @@
 #include "SimPositionSource.h"
 #include "OsdkPositionSource.h"
 #include "RcPwmInput.h"
+#include "Ballistics.h"
 
 #if !SIM_MODE
 #warning "FLIGHT BUILD: defects (a) e-stop fires Module B, (b) e-stop cannot leave DROPPING and (e) aborted drop logs as OK were CONFIRMED on hardware 2026-08-25 and are FIXED and re-verified. Defect (c) 10 waypoints vs 5 doors is now FIXED TOO, but by code reading only - it has NEVER been reproduced, because it needs a mission with more waypoints than doors and the device has one waypoint saved. Run SIM_MODE_VALIDATION_PLAN.md step 12 before trusting it. Servos have still never been driven by this firmware."
@@ -1087,6 +1088,7 @@ static void handleSerialLine(String s) {
 #if SIM_MODE
         Serial.println(F("  bench (SIM only): wpadd <lat> <lon> [r] [alt] | "
                          "wpradius <idx|all> <r> | wpclear | wpsave"));
+        Serial.println(F("  bench (SIM only): balltest — impact-predictor self-test"));
 #endif
         return;
     }
@@ -1142,6 +1144,70 @@ static void handleSerialLine(String s) {
     //
     // SIM_MODE-gated on purpose: a flight build must not carry a waypoint
     // editor that bypasses the dashboard's two-tap confirm.
+    // Self-test for the impact predictor. The math is pure arithmetic, so it
+    // can be verified with no aircraft, no GPS and no servos - the same way
+    // the CRC and passFlag work was validated before touching hardware. This
+    // runs the REAL firmware code on the REAL target, which a host-side
+    // reimplementation would not: float behaviour here is what actually flies.
+    // Expected values are in tools/test_ballistics.py; they reproduce the fall
+    // -carry table in PROJECT_HANDOFF.md PHASE 4 RESEARCH.
+    if (cmd == "balltest") {
+        Serial.println(F("[BALL] fallTime(h, vd=0)  expect 1.00980 / 1.27732 / 1.74904"));
+        Serial.printf("  h= 5m           -> %.5f s\n", Ballistics::fallTime(5.0f, 0.0f));
+        Serial.printf("  h= 8m           -> %.5f s\n", Ballistics::fallTime(8.0f, 0.0f));
+        Serial.printf("  h=15m           -> %.5f s\n", Ballistics::fallTime(15.0f, 0.0f));
+        Serial.println(F("[BALL] vertical velocity (h=8m)  expect 1.17942 / 1.38336"));
+        Serial.printf("  vd=+1 (descend) -> %.5f s\n", Ballistics::fallTime(8.0f,  1.0f));
+        Serial.printf("  vd=-1 (climb)   -> %.5f s\n", Ballistics::fallTime(8.0f, -1.0f));
+
+        Position t;
+        t.valid = t.vel_valid = t.height_valid = true;
+        t.lat_deg = 9.0222514; t.lon_deg = -79.5322405; t.height_m = 8.0f;
+
+        Serial.println(F("[BALL] carry at h=8m  expect 2.55 / 6.39 / 10.22 m"));
+        const float sp[3] = {2.0f, 5.0f, 8.0f};
+        for (uint8_t i = 0; i < 3; i++) {
+            t.vn_mps = sp[i]; t.ve_mps = 0.0f; t.vd_mps = 0.0f;
+            Serial.printf("  %.0f m/s north   -> %.3f m\n", sp[i],
+                          Ballistics::carryDistance(t));
+        }
+
+        double la, lo; float lead;
+        // Degenerate case: at zero velocity the predictor MUST return the
+        // aircraft position exactly, or it has changed hover behaviour.
+        t.vn_mps = t.ve_mps = t.vd_mps = 0.0f;
+        bool ok = Ballistics::predictImpact(t, la, lo, &lead);
+        Serial.printf("[BALL] v=0 degenerate: ok=%d dLat=%.9f dLon=%.9f (expect 0,0)\n",
+                      ok, la - t.lat_deg, lo - t.lon_deg);
+
+        t.vn_mps = 5.0f;
+        ok = Ballistics::predictImpact(t, la, lo, &lead);
+        Serial.printf("[BALL] 5m/s north: ok=%d lead=%.5fs dLat=%.9f (expect +0.000057372)\n",
+                      ok, lead, la - t.lat_deg);
+        Serial.printf("       impact is %.2f m north of the aircraft\n",
+                      (float)((la - t.lat_deg) * 111320.0));
+
+        t.ve_mps = 5.0f; t.vn_mps = 0.0f;
+        ok = Ballistics::predictImpact(t, la, lo, &lead);
+        Serial.printf("[BALL] 5m/s east:  ok=%d dLon=%.9f -> %.2f m east\n",
+                      ok, lo - t.lon_deg,
+                      (float)((lo - t.lon_deg) * 111320.0 * cos(t.lat_deg * DEG_TO_RAD)));
+
+        Serial.println(F("[BALL] fail-closed gates  ALL must be ok=0"));
+        Position g = t;
+        g.vel_valid = false;
+        Serial.printf("  no velocity health -> ok=%d\n", Ballistics::predictImpact(g, la, lo));
+        g = t; g.height_valid = false;
+        Serial.printf("  no height          -> ok=%d\n", Ballistics::predictImpact(g, la, lo));
+        g = t; g.valid = false;
+        Serial.printf("  no fix             -> ok=%d\n", Ballistics::predictImpact(g, la, lo));
+        g = t; g.height_m = 200.0f;
+        Serial.printf("  height 200m        -> ok=%d\n", Ballistics::predictImpact(g, la, lo));
+        g = t; g.vn_mps = 99.0f;
+        Serial.printf("  speed 99 m/s       -> ok=%d\n", Ballistics::predictImpact(g, la, lo));
+        return;
+    }
+
     if (cmd == "wpadd" || cmd == "wpradius" || cmd == "wpclear" || cmd == "wpsave") {
         // Same rule the HTTP route enforces — the engine indexes into this
         // list while armed, so editing it mid-mission is the stale-click hazard.

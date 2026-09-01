@@ -1,4 +1,5 @@
 #include "DropLogicEngine.h"
+#include "Ballistics.h"
 
 DropLogicEngine::DropLogicEngine(ConfigManager&   cfg,
                                  IPositionSource& pos,
@@ -79,8 +80,23 @@ void DropLogicEngine::update() {
     const MissionConfig& mc = _cfg.config();
     const DropPoint&     dp = mc.drops[_next_drop_idx];
 
-    float dist = haversineDistance(cur.lat_deg, cur.lon_deg,
-                                   dp.lat_deg,  dp.lon_deg);
+    // ── Phase 4: aim at the IMPACT point, not the release point ─────────
+    // A propagule keeps the aircraft's horizontal velocity while it falls, so
+    // testing the AIRCRAFT against the waypoint lands every seed downrange —
+    // 6.4m at 5 m/s from 8m, twice the target radius. Predict where a seed
+    // released right now would land, and test THAT instead.
+    //
+    // This is a substitution, not a rewrite: everything below is unchanged.
+    // predictImpact() fails closed, so on the GNSS fallback, in SIM, or with no
+    // velocity health, aim_* stay at the aircraft position and the behaviour is
+    // exactly what it was before Phase 4. At zero velocity the prediction
+    // degenerates to the same thing anyway.
+    double aim_lat = cur.lat_deg, aim_lon = cur.lon_deg;
+    float  lead_s  = 0.0f;
+    const bool predicted = Ballistics::predictImpact(cur, aim_lat, aim_lon, &lead_s);
+
+    float dist = haversineDistance(aim_lat,    aim_lon,
+                                   dp.lat_deg, dp.lon_deg);
 
     // Rate-limited to 1Hz. This ran on EVERY loop iteration while armed —
     // ~30 characters at 115200 baud is ~2.6ms of blocking, thousands of
@@ -95,7 +111,12 @@ void DropLogicEngine::update() {
     if (now_ms - last_dist_ms >= 1000 || fabsf(dist - last_dist_m) > 1.0f) {
         last_dist_ms = now_ms;
         last_dist_m  = dist;
-        Serial.printf("[DLE] WP%d dist=%.1fm (r=%.1fm)\n", dp.id, dist, dp.radius_m);
+        if (predicted)
+            Serial.printf("[DLE] WP%d impact=%.1fm (r=%.1fm) carry=%.1fm lead=%.2fs\n",
+                          dp.id, dist, dp.radius_m,
+                          Ballistics::carryDistance(cur), lead_s);
+        else
+            Serial.printf("[DLE] WP%d dist=%.1fm (r=%.1fm)\n", dp.id, dist, dp.radius_m);
     }
 
     if (dist <= dp.radius_m) {

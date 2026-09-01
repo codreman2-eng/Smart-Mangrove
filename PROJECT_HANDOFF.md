@@ -1417,7 +1417,7 @@ launcher currently releases *at* the waypoint, so every seed lands downrange:
 
 | Height | Fall time | @2 m/s | @5 m/s | @8 m/s |
 |---|---|---|---|---|
-| 5 m  | 1.01 s | 2.0 m | **5.1 m** | 8.1 m |
+| 5 m  | 1.01 s | 2.0 m | **5.0 m** | 8.1 m |
 | 8 m  | 1.28 s | 2.6 m | **6.4 m** | 10.2 m |
 | 15 m | 1.75 s | 3.5 m | **8.7 m** | 14.0 m |
 
@@ -1531,7 +1531,95 @@ bytes. Capture with the switch up, capture with it down.
 
 ---
 
-## FLIGHT CONTROLLER (Cube Orange — separate from launcher)
+## PHASE 4a (2026-09-01): THE IMPACT PREDICTOR \u2014 BUILT AND SELF-TESTED
+
+**Status: IMPLEMENTED and verified by two independent implementations. NEVER
+RUN ON REAL AIRCRAFT DATA \u2014 SIM injects position with no velocity, so the
+predictor has correctly never fired in anger. Read the gaps below before
+trusting a drop.**
+
+### What was built
+
+- **`Position` gains ballistics fields** (`PositionSource.h`): `height_m`,
+  `height_valid`, `vn_mps` / `ve_mps` / `vd_mps` (NED, **vd positive DOWN**),
+  `vel_valid`, and a `horizontalSpeed()` helper. Only `OsdkPositionSource`
+  fills them; GNSS and SIM leave them invalid.
+- **`OsdkPositionSource` now keeps `height`** \u2014 the field that had been
+  memcpy'd and discarded since Phase 3d, gated on position health and
+  plausibility. **And decodes VELOCITY (bit 3)**, which cost nothing: bit 3
+  sits below POSITION so its size was already in `FIELD_SZ` and the same
+  offset-from-flag walk reaches it. No new capture, no DJI Assistant 2 change.
+- **`Ballistics.h`** \u2014 new, pure arithmetic, no state:
+  `fallTime()`, `leadTime()`, `carryDistance()`, `predictImpact()`.
+- **`DropLogicEngine`** now tests the PREDICTED IMPACT POINT against the
+  waypoint instead of the aircraft position. It is a substitution at the
+  haversine call, not a rewrite \u2014 everything downstream is untouched.
+
+### It fails closed, and that is the design
+
+`predictImpact()` returns false and leaves its outputs alone whenever position,
+velocity or height is missing or implausible (height >120m, speed >30 m/s,
+degenerate latitude). The caller then uses the aircraft position, which is
+**exactly** the pre-Phase-4 behaviour. So the GNSS fallback, every SIM build,
+and any frame with bad velocity health all behave as they did yesterday. At zero
+velocity the prediction degenerates to the aircraft position anyway \u2014 verified
+to be *exactly* 0.000000000 degrees of offset, so hover drops are unchanged.
+
+### Verified by two implementations, on the real target
+
+`balltest` on the serial console runs the vectors on the actual ESP32 \u2014 real
+float behaviour, not a host approximation \u2014 and `tools/test_ballistics.py` is an
+independent Python reimplementation. They agree to five decimals:
+
+    fallTime  5m/8m/15m     1.00981 / 1.27732 / 1.74904 s
+    fallTime  8m, vd=+1/-1  1.17941 / 1.38336 s
+    carry @8m, 2/5/8 m/s    2.555 / 6.387 / 10.219 m
+    dLat 5 m/s north @8m    0.000057372 deg  (6.39 m)
+    v=0 degenerate          dLat=0.000000000 dLon=0.000000000
+    all five gates          ok=0
+
+The Python file also re-derives the fall-carry table below rather than quoting
+it \u2014 **and caught an error in it.** The h=5m @5 m/s cell read 5.1m; it is
+5.049m, which rounds to 5.0. The 2 and 8 m/s cells were right, so it was a
+single rounding slip. Corrected here and in `Ballistics.h`.
+
+### WHAT IS STILL MISSING \u2014 read before trusting a real drop
+
+1. **The predictor has never seen real aircraft data.** SIM has no velocity, so
+   it has correctly refused to predict every time it has ever run. The
+   `[DLE] WP%d impact=... carry=... lead=...` log line **has never been printed
+   on hardware.** First real test needs the M600 powered with the OSDK link
+   live; a walk test with the SIM build would do it, since GPIO 14 shows the
+   trigger without anything moving.
+2. **`T_EXIT_S` is 0.0 and UNMEASURED** \u2014 worth up to **2.9m** of along-track
+   spread at 5 m/s. It is deliberately 0 rather than a guess: a guessed value
+   biases every drop in one direction while looking authoritative in the log.
+   Bench job, 240fps phone, no drone needed \u2014 the same technique that measured
+   the drive window.
+3. **The DJI vertical-velocity sign is ASSUMED, not verified.**
+   `OSDK_VZ_IS_UP = true` in `OsdkPositionSource.cpp`. Getting it wrong is
+   second-order \u2014 about 1m at 8m for 1 m/s of vertical motion, against the 6.4m
+   the horizontal terms fix \u2014 but it is a real error and it is free to check:
+   climb steadily and confirm `vd` goes NEGATIVE while barometric `alt_m` rises.
+4. **`height` is above TAKEOFF, not above the drop surface.** On a tidal
+   mangrove flat that matters. A per-waypoint `ground_offset_m` in
+   `mission.json` is the fix \u2014 the operator knows the tide, the aircraft does not.
+5. **No drag model.** Rhizophora propagules are dense darts so near-ballistic is
+   a fair first approximation, but it needs a calibration factor from real drops.
+
+### The radius means something different now
+
+With the predictor active, `radius_m` stops being a fudge factor absorbing GPS
+noise and becomes an accuracy tolerance: "drop when I predict I will land within
+X metres". The 5.0m currently saved was chosen under the OLD meaning (smallest
+value that still survives the 1Hz GNSS fallback). Once the predictor is running
+on real data, revisit it \u2014 and consider the further change of firing at CLOSEST
+PREDICTED APPROACH rather than on circle ENTRY, which would decouple "when to
+fire" from "how big is the circle" entirely and make radius purely a reject gate.
+
+---
+
+## FLIGHT CONTROLLER (Cube Orange \u2014 separate from launcher)
 
 - User has Cube Orange Standard Set. Successfully flashed ArduCopter V4.6.3, CubeOrangePlus.
 - Frame: needs Hexa X (FRAME_CLASS=2, FRAME_TYPE=1) — user's final drone is a 6-rotor.
@@ -1740,11 +1828,12 @@ Measured 2026-08-25, after the Phase 3e latency work:
 
 | Build | Flash | RAM |
 |---|---|---|
-| Dashboard, SIM_MODE 1 | 1,093,872 (83%) | 49,984 (15%) |
+| Dashboard, SIM_MODE 1 | 1,102,428 (84%) | 50,064 (15%) |
 | Dashboard, SIM_MODE 0 | 1,097,427 (83%) | 50,084 (15%) |
 
-SIM_MODE 1 measured 2026-09-01 after the PHASE 3g waypoint commands
-(+2,444 bytes flash, +40 bytes RAM). Zero warnings from project code.
+SIM_MODE 1 measured 2026-09-01 after PHASE 4a. The ballistics work added
++8,556 bytes, a good part of it the SIM-only `balltest` vectors, taking flash
+from 83% to 84%. ~208KB headroom left. Zero warnings from project code.
 
 **Zero warnings from project code, both builds** (compiled with
 `--warnings default`). The only diagnostic emitted is the intentional
@@ -1775,14 +1864,17 @@ PHASE 3g.)*
 
 **Three things are now in front, in this order:**
 
-1. **The ballistics work** — see PHASE 4 RESEARCH below. Start with
-   `OsdkPositionSource.cpp:144`, which parses DJI's height-above-takeoff and
-   then discards it, then decode VELOCITY. **VELOCITY is bit 3 and its size is
-   already in `FIELD_SZ[6]`**, so the existing offset-from-flag loop reaches it
-   with no new layout work and no fresh capture — unlike STATUS (bit 11), which
-   needs GPS and RC sized first. Worth ~6m of landing accuracy, more than
-   everything else on this list combined, and it is the change that makes
-   `radius` mean something.
+1. **Finish the ballistics work** — the predictor is BUILT and self-tested
+   (PHASE 4a) but **has never seen real aircraft data**, because SIM has no
+   velocity and it correctly refuses to predict without it. Three things close
+   it, in increasing cost:
+   a. **Measure `T_EXIT_S`** — bench, 240fps phone, no drone. Currently 0.0 and
+      worth up to 2.9m of spread.
+   b. **Verify the DJI vertical-velocity sign** — `OSDK_VZ_IS_UP` is assumed.
+      Climb steadily; `vd` must go NEGATIVE while barometric `alt_m` rises.
+   c. **Power the M600 and watch a real `[DLE] ... impact=` line appear.** That
+      log line has never been printed. A walk test with the SIM build proves the
+      whole path with nothing moving — GPIO 14 shows the trigger.
 2. **Wire the limit switches** — promoted to a blocker by PHASE 3g. Until they
    are wired, the last door of each module overdrives 3x. This gates ALL servo
    work, and it also unlocks plan step 7b.
@@ -1872,6 +1964,9 @@ servo-runaway safety incident.
            SIM-gated waypoint serial commands added. Housekeeping done.
            Found a LATENT SERVO HAZARD: unwired limit switches make the last
            door of each module overdrive 3x. Blocks servo bring-up.
+- Phase 4a Impact predictor (fall carry) - BUILT and self-tested on target,
+           agreeing with an independent Python implementation. NEVER run on
+           real aircraft data; t_exit unmeasured; DJI vz sign unverified.
 - Phase 4  MAVLink position (Cube Orange TELEM2) - pending
 - Phase 5  Python config tool (import QGC/UgCS missions -> mission.json) - pending
 - Phase 6  Testing (bench -> static drops -> low altitude -> full mission) - pending
@@ -1889,6 +1984,12 @@ servo-runaway safety incident.
   reasoning for every unsafe pin recorded inline.
 - `tools/osdk_sniff.py` — PC-side DJI OSDK broadcast decoder and `--diff` field
   locator. Use it when the A3's broadcast config changes.
+- `Servo_Web_Calibrator_WROVER/Ballistics.h` — the impact predictor. Pure
+  arithmetic, no state, no I/O, so it is readable and testable on its own.
+  Run `balltest` on the serial console to execute its vectors on the target.
+- `tools/test_ballistics.py` — independent Python reimplementation of the same
+  math, and the expected values `balltest` is checked against. Run it after any
+  change to `Ballistics.h`; it also re-derives the fall-carry table.
 - `tools/bench_defect_c.py` — plan step 12. Resets the board, arms, walks a
   10-waypoint / 5-door mission through `simpos`, and shows what happens when
   the doors run out. It is what closed defect (c), and it surfaced the
