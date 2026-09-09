@@ -1869,7 +1869,9 @@ PHASE 3g.)*
    velocity and it correctly refuses to predict without it. Three things close
    it, in increasing cost:
    a. **Measure `T_EXIT_S`** — bench, 240fps phone, no drone. Currently 0.0 and
-      worth up to 2.9m of spread.
+      worth up to 2.9m of spread. **The procedure is written:**
+      `docs/T_EXIT_MEASUREMENT.md` — preconditions, rig, run steps and
+      reduction. NOT RUN yet; no trial has been taken.
    b. **Verify the DJI vertical-velocity sign** — `OSDK_VZ_IS_UP` is assumed.
       Climb steadily; `vd` must go NEGATIVE while barometric `alt_m` rises.
    c. **Power the M600 and watch a real `[DLE] ... impact=` line appear.** That
@@ -1990,6 +1992,15 @@ servo-runaway safety incident.
 - `tools/test_ballistics.py` — independent Python reimplementation of the same
   math, and the expected values `balltest` is checked against. Run it after any
   change to `Ballistics.h`; it also re-derives the fall-carry table.
+- `docs/T_EXIT_MEASUREMENT.md` — the bench procedure for `T_EXIT_S`, the one
+  remaining ballistics constant that is still 0.0. Explains why the video
+  frame rate never enters the answer (the drive window supplies the seconds,
+  the clip supplies only a ratio) and why doors 1-4 are safe to fire with the
+  limit switches still unwired. **Read it before flipping `SIM_MODE` to 0.**
+- `tools/t_exit_reduce.py` — reduces the filmed trials in
+  `tools/t_exit_trials.csv` to the constant, with `--selftest` to check its
+  own arithmetic against synthetic frames first. Rejects rows that cannot
+  mean anything rather than averaging them in.
 - `tools/bench_defect_c.py` — plan step 12. Resets the board, arms, walks a
   10-waypoint / 5-door mission through `simpos`, and shows what happens when
   the doors run out. It is what closed defect (c), and it surfaced the

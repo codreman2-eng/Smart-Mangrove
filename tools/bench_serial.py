@@ -39,6 +39,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 # The CH340 port moves between sessions - it has been COM6 and COM10. Check
 # Device Manager (or Arduino IDE Tools -> Port) rather than trusting this.
 PORT = "COM10"
+PORT_OVERRIDE = None      # set by take_port_flag() from "--port COMxx"
 BAUD = 115200
 
 # The waypoint saved on the device as of 2026-08-25. `wp` prints the current
@@ -54,9 +55,7 @@ def open_port():
     candidates turns a stack trace into an answer. Override with:
         python bench_serial.py <mode> --port COMxx
     """
-    port = PORT
-    if "--port" in sys.argv:
-        port = sys.argv[sys.argv.index("--port") + 1]
+    port = PORT_OVERRIDE or PORT
     try:
         return serial.Serial(port, BAUD, timeout=0.02)
     except serial.SerialException as e:
@@ -142,7 +141,25 @@ def run_schedule(ser, schedule, total):
                 print("[%+7.3fs] %s" % (time.time() - t0, txt))
 
 
+def take_port_flag():
+    """Pull "--port COMxx" out of argv before any mode parses the rest.
+
+    It used to be read in place and LEFT in argv, so `cmd 8 status --port COM6`
+    sent "--port" and "COM6" to the board as if they were board commands. They
+    came back as "unknown - try 'help'", which is harmless only by luck: argv
+    tokens must never reach the command stream on a board that drives servos.
+    """
+    global PORT_OVERRIDE
+    if "--port" in sys.argv:
+        i = sys.argv.index("--port")
+        if i + 1 >= len(sys.argv):
+            sys.exit("--port needs a value, e.g. --port COM6")
+        PORT_OVERRIDE = sys.argv[i + 1]
+        del sys.argv[i:i + 2]
+
+
 def main():
+    take_port_flag()
     mode = sys.argv[1] if len(sys.argv) > 1 else "listen"
     ser = open_port()
     try:
