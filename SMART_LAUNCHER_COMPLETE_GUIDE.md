@@ -1,7 +1,7 @@
 # Smart Launcher — Complete Implementation & Wiring Guide
 
 **Project:** Autonomous drone seed release system for mangrove reforestation  
-**Hardware:** Freenove ESP32-S3 WROOM + Cube Orange (ArduPilot)  
+**Hardware:** Freenove ESP32-WROVER-E + DJI M600 / A3 Pro (Cube Orange+ = Phase 4)  
 **Version:** Phase 2 — Firmware Skeleton  
 **Last updated:** 2026
 
@@ -37,9 +37,9 @@ The Smart Launcher is a **self-contained, platform-agnostic payload module** tha
 ### Key design principles
 
 - **Zero coupling to the flight controller.** The launcher uses its own GNSS or reads MAVLink from the Cube Orange. No DJI OSDK, PSDK, or Channel Expansion Kit required.
-- **Power only from the drone.** The drone provides 2S–6S power. All drop logic runs on the ESP32-S3 onboard.
+- **Power only from the drone.** The drone provides 2S–6S power. All drop logic runs on the ESP32 onboard.
 - **Two independent modules, synchronized.** Each module holds 5 seeds. Module A fires first; Module B fires immediately after A's limit switch confirms completion. This preserves balance.
-- **Configurable without reflashing.** All mission parameters (waypoints, timing, PWM values) live in `mission.json` on the ESP32-S3 filesystem. Change the file, re-upload the filesystem, fly.
+- **Configurable without reflashing.** All mission parameters (waypoints, timing, PWM values) live in `mission.json` on the ESP32 filesystem. Change the file, re-upload the filesystem, fly.
 - **Safe.** A hardware fault in the launcher cannot affect the flight controller. Power is the only shared resource.
 
 ### Physical mechanism
@@ -66,7 +66,7 @@ The cover only moves in **one direction** (retract). Seeds fall by gravity. The 
 │                         DRONE (host)                            │
 │  ┌──────────────────┐          ┌──────────────────────────────┐ │
 │  │  Cube Orange     │          │   Smart Launcher             │ │
-│  │  ArduCopter 4.6  │ TELEM2   │   Freenove ESP32-S3 WROOM   │ │
+│  │  ArduCopter 4.6  │ TELEM2   │   Freenove ESP32-WROVER-E   │ │
 │  │  (flight ctrl)   │──UART───▶│                              │ │
 │  │                  │          │  ┌─────────────────────────┐ │ │
 │  │  GPS/IMU/EKF     │          │  │ Drop Logic Engine        │ │ │
@@ -109,7 +109,7 @@ Set `position_source` in `mission.json`. No reflash needed to switch.
 
 | Component | Part | Qty | Notes |
 |---|---|---|---|
-| MCU | Freenove ESP32-S3 WROOM | 1 | 8MB Flash, 8MB PSRAM, built-in Wi-Fi |
+| MCU | Freenove ESP32-WROVER-E | 1 | PSRAM, built-in Wi-Fi. Arduino IDE board: **ESP32 Wrover Module** |
 | GNSS | u-blox M8N (BN-880 or similar) | 1 | UART, 3.3V, patch antenna included |
 | Servo | FS5106R continuous rotation | 2 | One per module. 4.8–6V |
 | Limit switch | Micro snap-action switch (SPDT) | 2 | One per module, at fully-retracted end |
@@ -123,7 +123,7 @@ Set `position_source` in `mission.json`. No reflash needed to switch.
 
 | Component | Part | Notes |
 |---|---|---|
-| JST-GH 6-pin cable | Cube Orange TELEM2 cable | For MAVLink position feed |
+| JST-GH 6-pin cable | Cube Orange+ TELEM2 cable | Phase 4 MAVLink feed — pins unassigned, see 4.6 |
 | USB-C cable | Data-capable (not charge-only) | Firmware upload |
 
 ### For bench testing only
@@ -138,24 +138,45 @@ Set `position_source` in `mission.json`. No reflash needed to switch.
 
 ## 4. Wiring Guide
 
-### 4.1 Complete pin mapping — ESP32-S3 WROOM
+### 4.1 Complete pin mapping — ESP32-WROVER-E
 
-| Signal | ESP32-S3 GPIO | Direction | Voltage | Notes |
+> **`Servo_Web_Calibrator_WROVER/Pins.h` is the authority.** These values were
+> validated on real hardware by serial-checkpoint bisection. If this table and
+> `Pins.h` ever disagree, `Pins.h` is right and this table is stale.
+
+| Signal | GPIO | Direction | Voltage | Notes |
 |---|---|---|---|---|
-| GNSS UART RX | GPIO 4 | IN | 3.3V | ← GNSS module TX |
-| GNSS UART TX | GPIO 5 | OUT | 3.3V | → GNSS module RX |
-| MAVLink RX | GPIO 16 | IN | 3.3V | ← Cube Orange TELEM2 TX (Phase 4) |
-| MAVLink TX | GPIO 17 | OUT | 3.3V | → Cube Orange TELEM2 RX (Phase 4) |
-| Servo A PWM | GPIO 18 | OUT | 3.3V | LEDC channel 0, 50 Hz |
-| Servo B PWM | GPIO 8 | OUT | 3.3V | LEDC channel 1, 50 Hz |
-| Limit Switch A | GPIO 9 | IN | 3.3V | INPUT_PULLUP, active LOW |
-| Limit Switch B | GPIO 10 | IN | 3.3V | INPUT_PULLUP, active LOW |
-| ARM button | GPIO 0 | IN | 3.3V | INPUT_PULLUP, hold 2s to ARM |
-| Status LED | GPIO 2 | OUT | 3.3V | Built-in blue LED on Freenove board |
+| Servo A PWM | GPIO 12 | OUT | 3.3V | `ledcAttach`, 50 Hz, 16-bit |
+| Servo B PWM | GPIO 13 | OUT | 3.3V | `ledcAttach`, 50 Hz, 16-bit |
+| Limit Switch A | GPIO 32 | IN | 3.3V | INPUT_PULLUP, active LOW |
+| Limit Switch B | GPIO 33 | IN | 3.3V | INPUT_PULLUP, active LOW |
+| Status LED | GPIO 22 | OUT | 3.3V | Plain 2-pin LED + 330R. **Not** the board's built-in |
+| Wait LED (yellow) | GPIO 27 | OUT | 3.3V | 330R to GND. Steady ON = ARMED |
+| Drop announce LED | GPIO 14 | OUT | 3.3V | 330R to GND. Lit for the servo drive window |
+| RC pilot trigger | GPIO 35 | IN | 3.3V | Input-only pin — **external 10k pull-down required** |
+| OSDK RX | GPIO 25 | IN | 3.3V | ← DJI A3 Pro API port TX, 921600 baud (UART2) |
+| OSDK TX | GPIO 26 | OUT | 3.3V | Wired for future use; never driven — the link is receive-only |
+| GNSS UART RX | GPIO 4 | IN | 3.3V | ← GNSS module TX (UART1) |
+| GNSS UART TX | GPIO 5 | OUT | 3.3V | → GNSS module RX (UART1) |
+| ARM button | GPIO 0 | IN | 3.3V | Onboard BOOT button, hold 2s **after** boot. Secondary path — the dashboard ARM button is primary |
 | GND | GND | — | 0V | Common ground — CRITICAL |
 | 5V in | 5V pin | PWR IN | 5V | From UBEC output |
 
-> **GPIO 3.3V signal is safe for servo signal wires.** Most servos accept 3.3V logic on the signal pin even when powered at 5V. Tested with FS5106R.
+#### ⛔ Pins that must never be used on this board
+
+| Pin | Why | How it was found |
+|---|---|---|
+| GPIO 2 | Strapping pin. Driven as OUTPUT during/around boot it boot-loops (`rst:0x8 TG1WDT_SYS_RESET`) | Cost a debugging session |
+| GPIO 9, 10 | Permanently wired to the shared flash+PSRAM SPI bus on WROVER modules, regardless of flash mode. `pinMode(9, INPUT_PULLUP)` crashes the board instantly | Live serial bisection |
+| GPIO 16, 17 | Same PSRAM bus. These are `Serial2`'s **default** pins, so UART2 pins must always be passed explicitly to `Serial2.begin()` | Caught before it cost anything |
+
+Free and safe if you need a spare: **18, 19, 21, 23**.
+
+> **A 3.3V GPIO signal is safe for servo signal wires.** Most servos accept 3.3V logic on the signal pin even when powered at 5V. Tested with FS5106R.
+
+> **Note on GPIO 14:** the boot ROM emits a brief PWM burst on this pin, so a
+> flicker of the drop announce LED at power-on — before checkpoint `[1]` prints —
+> is expected, not a fault.
 
 ---
 
@@ -168,12 +189,17 @@ Servo wire colour → Connect to
 ─────────────────────────────────────────────────────
 Brown / Black     → UBEC GND  AND  ESP32 GND (common)
 Red               → UBEC 5V output
-Orange / Yellow   → ESP32 GPIO (18 for A, 8 for B)
+Orange / Yellow   → ESP32 GPIO (12 for A, 13 for B)
 ```
 
 > **Never power servos from the ESP32 5V or 3.3V pins.** Always use the UBEC. Servo stall current (up to 1.5A each) will reset or damage the ESP32 regulator.
 
 **Add a 100µF electrolytic capacitor** across the servo power rail (+ to 5V, – to GND) near each servo connector. This absorbs voltage spikes when the servo starts or stalls.
+
+> **`SIM_MODE` in `Pins.h` decides whether these pins are driven at all.** With
+> `SIM_MODE 1`, `ledcAttach()` is never called on GPIO 12/13 — the signal lines
+> stay high-impedance and no PWM is generated. **Also unplug the servo UBEC for
+> sim runs.** Set it to `0` only for a flight build.
 
 ---
 
@@ -186,18 +212,26 @@ Each micro switch has 3 terminals: COM, NO (Normally Open), NC (Normally Closed)
 Limit switch terminal → Connect to
 ──────────────────────────────────
 COM                   → GND
-NO                    → GPIO 9 (Module A) or GPIO 10 (Module B)
+NO                    → GPIO 32 (Module A) or GPIO 33 (Module B)
 NC                    → not connected
 ```
 
 The firmware configures these pins as `INPUT_PULLUP`. When the cover reaches the end of the rail and presses the switch, the GPIO reads LOW → servo auto-stops.
+
+> ⚠️ **Wire these before `SIM_MODE` goes to 0.** With the switches unwired the pin
+> floats high and the last door of each module runs to its timeout instead of
+> stopping: module A drove **1740 ms against a 580 ms target** — a 3x overdrive.
+> Harmless in SIM, mechanically dangerous with real servos.
+>
+> Only the **last** door of a module reads the switch (`_is_last_door`); doors 1–4
+> use `travel_ms` and never read the pin, so they are safe to fire un-switched.
 
 ---
 
 ### 4.4 GNSS module wiring (u-blox M8N / BN-880)
 
 ```
-GNSS module pin → ESP32-S3 GPIO
+GNSS module pin → ESP32 GPIO
 ────────────────────────────────
 VCC (3.3V)      → 3V3 pin on ESP32 board
 GND             → GND
@@ -209,16 +243,70 @@ RX              → GPIO 5 (ESP32 UART1 TX)
 
 ---
 
-### 4.5 Cube Orange TELEM2 wiring (Phase 4 — MAVLink)
+### 4.5 DJI M600 / A3 Pro wiring (primary position + pilot trigger)
 
-The TELEM2 port on the Cube Orange carrier board uses a **JST-GH 6-pin connector**.
+This is the link that is actually flown today; the M8N above is the fallback.
+
+**API port → OSDK position (receive-only):**
 
 ```
-TELEM2 pin (JST-GH) → Signal    → ESP32-S3 GPIO
+A3 "API" port pin → ESP32
+──────────────────────────────────────────────────
+TX                → GPIO 25   (330R series optional)
+GND               → GND       ← MANDATORY
+RX                → NOT CONNECTED
+VCC               → NOT CONNECTED
+```
+
+Both sides are 3.3V — no level shifter. 921600 baud, as set in DJI Assistant 2.
+**The launcher never transmits on this link** — that is a design rule, not a
+limitation. Trimming the broadcast in Assistant 2 to POSITION+GPS+RC+STATUS cuts
+the frame from 231 to ~60 bytes, which is safe: the decoder computes field
+offsets from the `passFlag`.
+
+**F-channel → pilot RC trigger:**
+
+```
+A3 F-channel signal → ESP32 GPIO 35
+                    → 10k pull-down from GPIO 35 to GND   ← REQUIRED
+A3 GND              → ESP32 GND                            ← MANDATORY
+```
+
+GPIO 35 is input-only (34–39 are), so no firmware bug can ever back-drive the
+flight controller — that is the reason for the choice, not convenience.
+Input-only pins have **no internal pull resistor**, so without the external 10k
+pull-down a disconnected signal wire floats and reads as noise instead of
+"no signal".
+
+> **MEASURE THE F-CHANNEL VOLTAGE BEFORE CONNECTING.** It should be 3.3V logic.
+> If it reads 5V, fit a 10k/20k divider or a level shifter — the ESP32 is not 5V
+> tolerant.
+
+Bring-up: use `RC_Input_Calibration_Tool.ino` (repo root) before trusting this
+path in the dashboard firmware.
+
+---
+
+### 4.6 Cube Orange+ TELEM2 wiring (Phase 4 — MAVLink, NOT YET WIRED)
+
+Phase 4 would take position from the Cube Orange+ over MAVLink as a cross-check
+and mode/abort detector. **No pins are assigned for this yet**, and the obvious
+choice is a trap:
+
+- **Not GPIO 16/17.** Those are `Serial2`'s defaults *and* the WROVER PSRAM bus.
+- UART0 is the console, UART1 is the GNSS (GPIO 4/5), and **UART2 is already
+  taken by the DJI OSDK link** (GPIO 25/26). A third UART has to be resolved
+  before this is wired — pick free pins (18/19/21/23) and pass them explicitly
+  to `begin()`.
+
+For reference, the Cube Orange carrier's TELEM2 port is a **JST-GH 6-pin**:
+
+```
+TELEM2 pin (JST-GH) → Signal    → ESP32
 ─────────────────────────────────────────────────
 Pin 1               → +5V       → NOT connected (ESP32 already powered)
-Pin 2               → TX (out)  → GPIO 16 (ESP32 UART2 RX)
-Pin 3               → RX (in)   → GPIO 17 (ESP32 UART2 TX)
+Pin 2               → TX (out)  → ESP32 UART RX   (pin TBD — NOT 16)
+Pin 3               → RX (in)   → ESP32 UART TX   (pin TBD — NOT 17)
 Pin 4               → CTS       → NOT connected
 Pin 5               → RTS       → NOT connected
 Pin 6               → GND       → GND (common ground)
@@ -228,39 +316,43 @@ Pin 6               → GND       → GND (common ground)
 
 ---
 
-### 4.6 Complete wiring diagram (text schematic)
+### 4.7 Complete wiring diagram (text schematic)
 
 ```
                     ┌─────────────────────────────┐
   DRONE BATTERY     │    UBEC  5V / 5A            │
   2S–6S ──────────▶ │  IN: 7.4–25.2V              │──── 5V out ──┬── Servo A red
-                    │  OUT: 5V regulated           │              ├── Servo B red
+                    │  OUT: 5V regulated          │              ├── Servo B red
                     └─────────────────────────────┘              └── ESP32 5V pin
 
   GND bus ──────────────────────────────────────────────────────────────────────
-           │         │          │          │          │          │
-         UBEC GND  Servo A    Servo B   Limit SW A  Limit SW B  GNSS GND
+           │         │          │          │          │          │        │
+         UBEC GND  Servo A    Servo B   Limit SW A  Limit SW B  GNSS GND  A3 GND
                    brown/blk  brown/blk  COM         COM
 
   ┌──────────────────────────────────────────────────────────────────────┐
-  │                    Freenove ESP32-S3 WROOM                           │
+  │                   Freenove ESP32-WROVER-E                            │
   │                                                                      │
   │  GPIO 4  ◀──────────────────────────────────── GNSS TX              │
   │  GPIO 5  ──────────────────────────────────▶   GNSS RX              │
-  │  GPIO 16 ◀──────────────────────────────────── Cube TELEM2 TX (Ph4) │
-  │  GPIO 17 ──────────────────────────────────▶   Cube TELEM2 RX (Ph4) │
-  │  GPIO 18 ──────────────────────────────────▶   Servo A signal (org) │
-  │  GPIO 8  ──────────────────────────────────▶   Servo B signal (org) │
-  │  GPIO 9  ◀──── 10kΩ pullup ──── Limit SW A NO ──── GND             │
-  │  GPIO 10 ◀──── 10kΩ pullup ──── Limit SW B NO ──── GND             │
-  │  GPIO 0  ◀──── 10kΩ pullup ──── ARM button ──── GND                │
-  │  GPIO 2  ──── [built-in LED]                                        │
+  │  GPIO 25 ◀──────────────────────────────────── A3 API TX (OSDK)     │
+  │  GPIO 26 ──────────────────────────────────▶   A3 API RX (unused)   │
+  │  GPIO 35 ◀──── 10kΩ pull-down to GND ────────  A3 F-channel (RC)    │
+  │  GPIO 12 ──────────────────────────────────▶   Servo A signal (org) │
+  │  GPIO 13 ──────────────────────────────────▶   Servo B signal (org) │
+  │  GPIO 32 ◀──── internal pullup ──── Limit SW A NO ──── GND          │
+  │  GPIO 33 ◀──── internal pullup ──── Limit SW B NO ──── GND          │
+  │  GPIO 0  ◀──── onboard BOOT button                                  │
+  │  GPIO 22 ──── [330R] ──── Status LED ──── GND                       │
+  │  GPIO 27 ──── [330R] ──── Wait LED (yellow) ──── GND                │
+  │  GPIO 14 ──── [330R] ──── Drop announce LED ──── GND                │
   │  GND     ──────────────────────────────── Common GND bus            │
   │  5V      ◀──────────────────────────────── UBEC 5V out              │
   └──────────────────────────────────────────────────────────────────────┘
 
-  Note: 10kΩ pullup resistors are internal (INPUT_PULLUP). 
-  External resistors not required.
+  Note: the limit-switch 10kΩ pullups are INTERNAL (INPUT_PULLUP) — no external
+  resistors needed. The GPIO 35 pull-DOWN is EXTERNAL and IS required.
+  Never use GPIO 2, 9, 10, 16 or 17 on this board — see 4.1.
 ```
 
 ---
@@ -271,7 +363,7 @@ Pin 6               → GND       → GND (common ground)
 
 | Component | Voltage | Typical current | Peak (stall) |
 |---|---|---|---|
-| ESP32-S3 WROOM | 5V → 3.3V internal | 80 mA | 250 mA (Wi-Fi TX) |
+| ESP32-WROVER-E | 5V → 3.3V internal | 80 mA | 250 mA (Wi-Fi TX) |
 | GNSS M8N | 3.3V | 25 mA | 35 mA |
 | Servo A (FS5106R) | 5V | 150 mA running | 1500 mA stall |
 | Servo B (FS5106R) | 5V | 150 mA running | 1500 mA stall |
@@ -375,7 +467,6 @@ pio run --target upload && pio device monitor
 |---|---|---|
 | TinyGPSPlus | ^1.0.3 | NMEA sentence parsing |
 | ArduinoJson | ^7.0.0 | JSON config parsing |
-| FastLED | ^3.6.0 | WS2812 RGB LED |
 | Arduino core for ESP32 | ^3.x | Board support |
 
 All installed automatically by PlatformIO from `platformio.ini`.
@@ -503,14 +594,14 @@ A standalone Arduino sketch (`servo_tester.ino`) for bench testing servos before
 - Fine-tuning slider (1000–2000 µs, 10 µs steps)
 - Live limit switch indicators (auto-stops servo on trigger)
 - Event log with timestamps
-- Heartbeat LED blink on GPIO 2
+- Heartbeat LED blink on GPIO 22
 
 ### 9.2 How to use
 
 1. Flash `servo_tester.ino` with Arduino IDE
 2. Connect phone/laptop to Wi-Fi: **"SmartLauncher"** (no password)
 3. Open browser → `http://192.168.4.1`
-4. Blue LED blinks every 2 seconds = server healthy
+4. Status LED (GPIO 22) blinking = server healthy
 
 ### 9.3 PWM reference for FS5106R
 
@@ -532,7 +623,7 @@ A standalone Arduino sketch (`servo_tester.ino`) for bench testing servos before
 
 ### 10.1 File location
 
-The mission config lives at `/mission.json` on the ESP32-S3 LittleFS filesystem.  
+The mission config lives at `/mission.json` on the ESP32 LittleFS filesystem.  
 Edit `smart_launcher/data/mission.json` on your PC, then upload:
 ```bash
 pio run --target uploadfs
@@ -652,12 +743,12 @@ Write parameters → reboot Cube Orange → TELEM2 will output MAVLink immediate
 ### 11.4 TELEM2 wiring to ESP32 (Phase 4)
 
 ```
-Cube Orange TELEM2       ESP32-S3 WROOM
+Cube Orange+ TELEM2      ESP32-WROVER-E
 (JST-GH 6-pin)
 ─────────────────────────────────────────
 Pin 1 (+5V)    →    NOT CONNECTED
-Pin 2 (TX)     →    GPIO 16 (UART2 RX)
-Pin 3 (RX)     →    GPIO 17 (UART2 TX)
+Pin 2 (TX)     →    ESP32 UART RX  (pin TBD — NOT 16, see 4.6)
+Pin 3 (RX)     →    ESP32 UART TX  (pin TBD — NOT 17, see 4.6)
 Pin 4 (CTS)    →    NOT CONNECTED
 Pin 5 (RTS)    →    NOT CONNECTED
 Pin 6 (GND)    →    GND (common ground)
@@ -673,13 +764,13 @@ Perform all these tests **before mounting on the drone** and **before any flight
 
 ```
 PASS criteria:
-□ Blue LED blinks 3 times fast → boot sequence started
+□ Status LED (GPIO 22) solid on → BOOT state; a brief GPIO 14 flicker at power-on is the boot ROM, not a fault
 □ Serial monitor shows:
     === Smart Launcher booting ===
     [CFG] LittleFS mounted OK
     [CFG] Loaded 'mangrove_plot_A' — 5 drop points
     [HW] Servos initialised — both at 1500µs (STOP)
-    [SM] State machine started — BOOT
+    [SM] State machine started — BOOT (state LED GPIO22, wait LED GPIO27)
     [SM] Disarmed → IDLE
     [MAIN] Boot complete — IDLE
 □ LED solid YELLOW = IDLE state
@@ -827,33 +918,58 @@ After calibrating both modules individually:
 
 ```
                     ┌──────┐
-                    │ BOOT │  Blue — startup, self-check
+                    │ BOOT │  startup, self-check
                     └──┬───┘
                        │ config OK
                     ┌──▼───┐
-              ┌────▶│ IDLE │  Yellow — ready, drop logic off
+              ┌────▶│ IDLE │  ready, drop logic off
               │     └──┬───┘
-              │        │ ARM button held 2s
+              │        │ ARM (dashboard button, or BOOT button held 2s)
               │     ┌──▼────┐
-              │     │ ARMED │  Green blink — drop logic active
+              │     │ ARMED │  drop logic active
               │     └──┬────┘
               │        │ in radius + armed
               │     ┌──▼──────────┐
-              │     │  DROPPING   │  Purple — executing drop
+              │     │  DROPPING   │  executing drop
               │     └──┬──────────┘
               │        │ drop complete
               └────────┘ back to ARMED
 
-         Any state ──(error)──▶ FAULT  Red — servos stopped
+         Any state ──(error)──▶ FAULT  servos stopped
 ```
 
-| LED colour | State | Action required |
+### There is no RGB LED on this board
+
+State is signalled by **blink cadence across three single-colour LEDs**, not by
+colour — `PIN_LED` is a plain 2-pin LED, not a WS2812. See
+`StateMachine::_updateLED()` / `_updateWaitLED()`.
+
+| State | Status LED (GPIO 22) | Wait LED, yellow (GPIO 27) |
 |---|---|---|
-| Blue steady | BOOT | Wait for boot to complete |
-| Yellow steady | IDLE | Normal — hold button 2s to arm |
-| Green blink | ARMED | Normal — ready for flight |
-| Purple steady | DROPPING | Normal — drop in progress |
-| Red steady | FAULT | Check serial output for error |
+| BOOT | Solid on | Dark until IDLE |
+| IDLE | Slow single blink (150 ms on / 2 s period) | Slow blink (120 ms on / 1.5 s period) |
+| ARMED | Steady 2 Hz blink (250/500 ms) | **STEADY ON** — the "waiting for trigger" state |
+| DROPPING | Rapid blink (50/100 ms) | **Dark** — the announce LED has the floor |
+| FAULT | Slow 50% on/off (500/1000 ms) | Rapid blink (100/200 ms) |
+
+The wait LED is deliberately the **inverse** of the announce LED during DROPPING:
+yellow steady = holding, yellow dark + announce lit = firing. That makes the
+A→B handoff readable at a glance, and makes an unexpected re-fire after an
+emergency stop obvious.
+
+### Drop announce LED (GPIO 14)
+
+Active in **both** SIM and flight builds, so bench behaviour matches the aircraft.
+It is lit for exactly the window the servo is (or would be) driven, then — after
+a 200 ms dark gap — blips out which module just dropped:
+
+| Module | Confirm pattern |
+|---|---|
+| A | Short blips — 80 ms on / 120 ms off |
+| B | Long blips — 400 ms on / 200 ms off |
+
+> A brief flicker on GPIO 14 at power-on, before checkpoint `[1]` prints, is the
+> boot ROM's PWM burst — expected, not a fault.
 
 ---
 
@@ -942,7 +1058,7 @@ States: 0=BOOT 1=IDLE 2=ARMED 3=DROPPING 4=FAULT
 |---|---|
 | Is system ARMED? | Type `arm` in serial, check LED is green |
 | Is power supply on? | Verify UBEC 5V with multimeter |
-| Is PWM wire connected? | Check GPIO 18 (A) or GPIO 8 (B) |
+| Is PWM wire connected? | Check GPIO 12 (A) or GPIO 13 (B) |
 | Is common ground connected? | UBEC GND and ESP32 GND must share ground |
 | Is servo signal 3.3V compatible? | FS5106R accepts 3.3V signal — should be fine |
 
@@ -951,7 +1067,7 @@ States: 0=BOOT 1=IDLE 2=ARMED 3=DROPPING 4=FAULT
 | Symptom | Cause | Fix |
 |---|---|---|
 | Servo creeps slowly | Neutral not calibrated | Use servo tester slider to find true stop |
-| Servo runs continuously | Limit switch wired incorrectly | Verify COM→GND, NO→GPIO |
+| Servo runs continuously | Limit switch wired incorrectly or unwired | Verify COM→GND, NO→GPIO 32 (A) / 33 (B). Only the LAST door of a module reads the switch |
 | Servo runs past door | travel_ms too high | Reduce by 20ms, re-test |
 
 ### GPS not acquiring fix
@@ -1012,6 +1128,6 @@ States: 0=BOOT 1=IDLE 2=ARMED 3=DROPPING 4=FAULT
 ---
 
 *Smart Launcher Project — Mangrove Reforestation Initiative*  
-*Hardware: Freenove ESP32-S3 WROOM + Cube Orange Standard Set*  
+*Hardware: Freenove ESP32-WROVER-E + DJI M600 / A3 Pro (Cube Orange+ Standard Set = Phase 4)*  
 *Firmware: ArduCopter V4.6.3 + Custom PlatformIO C++ (Arduino framework)*
 
