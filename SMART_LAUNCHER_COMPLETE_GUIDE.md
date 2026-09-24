@@ -36,7 +36,7 @@ The Smart Launcher is a **self-contained, platform-agnostic payload module** tha
 
 ### Key design principles
 
-- **Zero coupling to the flight controller.** The launcher uses its own GNSS or reads MAVLink from the Cube Orange. No DJI OSDK, PSDK, or Channel Expansion Kit required.
+- **Zero *control* coupling to the flight controller.** The launcher reads position — from its own GNSS, or from the DJI A3's unprompted OSDK broadcast (Phase 3d) — and **never transmits** to the aircraft. No PSDK or Channel Expansion Kit, and no commanded flight. The original "no OSDK at all" rule was narrowed to receive-only, not dropped.
 - **Power only from the drone.** The drone provides 2S–6S power. All drop logic runs on the ESP32 onboard.
 - **Two independent modules, synchronized.** Each module holds 5 seeds. Module A fires first; Module B fires immediately after A's limit switch confirms completion. This preserves balance.
 - **Configurable without reflashing.** All mission parameters (waypoints, timing, PWM values) live in `mission.json` on the ESP32 filesystem. Change the file, re-upload the filesystem, fly.
@@ -418,64 +418,121 @@ The limit switch must be positioned so the switch actuator is **fully depressed*
 
 ## 7. Software Environment Setup
 
-### 7.1 Arduino IDE (recommended for servo tester)
+> **The firmware is built with the Arduino IDE, not PlatformIO.** The live
+> sketch is `Servo_Web_Calibrator_WROVER/Servo_Web_Calibrator_WROVER.ino`.
+> The PlatformIO project under `smart_launcher_phase2/` is the abandoned Phase 2
+> skeleton — see 7.6 before touching it.
+
+### 7.1 Arduino IDE — board and core
 
 1. Download Arduino IDE 2.x from [arduino.cc](https://www.arduino.cc/en/software)
-2. Open `File → Preferences`
-3. Paste into "Additional boards manager URLs":
+2. `File → Preferences` → paste into "Additional boards manager URLs":
    ```
    https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
    ```
-4. `Tools → Board → Boards Manager` → search "esp32" → install **esp32 by Espressif Systems** (version 3.x)
-5. Select board: `Tools → Board → ESP32 Arduino → ESP32S3 Dev Module`
-6. Set these options:
-   ```
-   USB CDC On Boot  : Enabled      ← CRITICAL for Freenove WROOM
-   Upload Speed     : 921600
-   Flash Size       : 8MB
-   Partition Scheme : 8M with spiffs (3MB APP/1.5MB SPIFFS)
-   ```
+3. `Tools → Board → Boards Manager` → search "esp32" → install **esp32 by
+   Espressif Systems**. The project machine has **3.3.11** installed (verified
+   via `arduino-cli board details`, 2026-09-14); match it if you can. Note
+   `START_HERE.md` still says 3.3.8 — it has drifted.
+4. Select board: `Tools → Board → ESP32 Arduino → **ESP32 Wrover Module**`
 
-### 7.2 PlatformIO (for main firmware)
+| Setting | Value |
+|---|---|
+| Board | **ESP32 Wrover Module** |
+| Upload Speed | 921600 |
+| Flash Frequency | 80 MHz |
+| Partition Scheme | Default 4MB with spiffs |
 
-1. Install [VS Code](https://code.visualstudio.com/)
-2. Install the PlatformIO extension from the VS Code marketplace
-3. Open the `smart_launcher/` project folder
-4. PlatformIO auto-detects `platformio.ini` and installs all dependencies
+> ⛔ **"ESP32 Wrover Module" is not optional.** Choosing "ESP32 Dev Module"
+> misconfigures PSRAM and the board crashes on boot. This already happened once.
+> "ESP32S3 Dev Module" is wrong for a different reason — this is not an S3.
 
-**Build commands:**
-```bash
-# Build firmware only
-pio run
+### 7.2 Turn compiler warnings on
 
-# Upload firmware to ESP32
-pio run --target upload
+`File → Preferences → Compiler warnings → **Default**` (or higher).
 
-# Upload filesystem (mission.json to LittleFS)
-pio run --target uploadfs
+The sketch carries a deliberate `#warning` that fires on a flight build,
+restating which defects were confirmed on hardware, which were closed by code
+reading only, and that the servos have never been driven by this firmware. At
+the IDE's default setting of "None" you would never see it.
 
-# Open serial monitor at 115200
-pio device monitor
+### 7.3 Uploading
 
-# Build + upload + monitor in one step
-pio run --target upload && pio device monitor
-```
+1. Open `Servo_Web_Calibrator_WROVER/Servo_Web_Calibrator_WROVER.ino`
+2. Check `#define SIM_MODE` in `Pins.h` — for bench work **it must be `1`**
+3. Set board (7.1) and port
+4. Upload. Wait for `Hash of data verified` and `Hard resetting`
 
-### 7.3 Required libraries
+**The COM port moves.** The launcher enumerates as a **CH340** and has been seen
+on COM6 and COM10; unplugging and replugging can move it. Never assume — plug
+in, check `Tools → Port`, unplug, look again; the one that disappeared is yours.
+It is a different device from the Cube Orange+.
+
+**Only one program can hold a port.** If upload fails with "Access denied" or
+"port busy", the Serial Monitor is almost certainly still open. Close it. This
+has caught us three times.
+
+### 7.4 There is no filesystem upload step
+
+The old `uploadfs` instruction does not apply to this firmware. `ConfigManager`
+calls `LittleFS.begin(true)`, which formats on first mount if needed, and
+`/mission.json` **self-seeds from a PROGMEM default** (`MissionDefault.h`) when
+it is missing. Waypoints and calibration are then written back to `mission.json`
+from the device itself — the dashboard's Save button, or the SIM-only serial
+commands `wpadd` / `wpradius` / `wpclear` / `wpsave`.
+
+Nothing needs to be pushed to flash from the PC except the sketch.
+
+### 7.5 Required libraries
+
+Install via `Tools → Manage Libraries`:
 
 | Library | Version | Purpose |
 |---|---|---|
 | TinyGPSPlus | ^1.0.3 | NMEA sentence parsing |
 | ArduinoJson | ^7.0.0 | JSON config parsing |
-| Arduino core for ESP32 | ^3.x | Board support |
 
-All installed automatically by PlatformIO from `platformio.ini`.
+`WiFi`, `WebServer`, `LittleFS` and `HardwareSerial` ship with the ESP32 core —
+nothing to install.
+
+### 7.6 Headless builds (arduino-cli)
+
+`arduino-cli` is **not on PATH**. It ships inside the IDE install:
+
+```bash
+ARDUINO_CLI="C:/Program Files/Arduino IDE/resources/app/lib/backend/resources/arduino-cli.exe"
+export ARDUINO_DIRECTORIES_DATA="C:/Users/carli/AppData/Local/Arduino15"
+
+"$ARDUINO_CLI" compile --fqbn esp32:esp32:esp32wrover Servo_Web_Calibrator_WROVER
+```
+
+Using the IDE's own data directory is what makes the CLI see the same installed
+core and libraries as the IDE. `esp32:esp32:esp32wrover` is the same board
+profile as "ESP32 Wrover Module" in 7.1.
+
+### 7.7 PlatformIO — historical only
+
+`smart_launcher_phase2/smart_launcher/platformio.ini` targets
+`freenove_esp32_wrover` and was the Phase 2 build. **That tree is not the flight
+firmware and has not been touched since Phase 3 landed.** Its pin `build_flags`
+were partly corrected during the WROVER port, but they still carry
+`-DPIN_MAVLINK_RX=16 -DPIN_MAVLINK_TX=17` — the PSRAM-bus trap described in 4.1.
+Do not copy pins out of it; `Pins.h` is the authority.
 
 ---
 
 ## 8. Firmware — Phase 2 Skeleton
 
 ### 8.1 Project structure
+
+> ⚠️ **This is the Phase 2 skeleton's layout, not the flight firmware.** The
+> live code is a flat Arduino sketch folder, `Servo_Web_Calibrator_WROVER/`,
+> holding `Servo_Web_Calibrator_WROVER.ino` plus `Pins.h`, `ConfigManager`,
+> `PositionSource` / `GNSSPositionSource` / `OsdkPositionSource` /
+> `SimPositionSource` / `FallbackPositionSource`, `ActuatorModule`,
+> `StateMachine`, `DropLogicEngine`, `RcPwmInput`, `Ballistics.h`,
+> `MissionDefault.h` and `Logger`. The module responsibilities in 8.2 still
+> describe it; the directory tree below does not. See 7.7.
 
 ```
 smart_launcher/
@@ -623,11 +680,15 @@ A standalone Arduino sketch (`servo_tester.ino`) for bench testing servos before
 
 ### 10.1 File location
 
-The mission config lives at `/mission.json` on the ESP32 LittleFS filesystem.  
-Edit `smart_launcher/data/mission.json` on your PC, then upload:
-```bash
-pio run --target uploadfs
-```
+The mission config lives at `/mission.json` on the ESP32 LittleFS filesystem.
+
+**It is not uploaded from the PC.** On first boot it self-seeds from a PROGMEM
+default (`MissionDefault.h`), and it is edited on the device thereafter:
+
+- the Wi-Fi dashboard's **Save** button (edits live in RAM until you save), or
+- the SIM-only serial commands `wpadd` / `wpradius` / `wpclear` / `wpsave`.
+
+See 7.4. The annotated structure below documents the file's schema.
 
 ### 10.2 Full annotated config
 
@@ -818,11 +879,11 @@ PASS criteria:
 Procedure:
 1. Flash main firmware
 2. Mark start position on rack with marker pen
-3. Type 'arm' in serial monitor → LED blinks GREEN
+3. Type 'arm' in serial monitor → status LED goes to a 2 Hz blink, wait LED steady on (§14)
 4. Type 'dropa' → servo runs for travel_ms, stops
 5. Measure how far rack moved
-6. Adjust travel_ms in mission.json if needed
-7. Re-upload filesystem: pio run --target uploadfs
+6. Adjust travel_ms via the dashboard's calibration Save (writes mission.json)
+7. Reboot or reload config — no filesystem upload, see 7.4
 8. Repeat until rack moves exactly 35mm
 
 PASS criteria:
@@ -842,7 +903,7 @@ Procedure:
     [GPS] UART1 started on RX=4 TX=5 @9600 baud
    After satellite acquisition (~60s):
     [MAIN] GPS stable for 10 s — ready to ARM
-4. Hold ARM button for 2+ seconds → LED blinks GREEN
+4. Hold ARM button for 2+ seconds → status LED goes to a 2 Hz blink, wait LED steady on (§14)
 
 PASS criteria:
 □ GPS acquires fix within 90s (cold start)
@@ -975,7 +1036,13 @@ a 200 ms dark gap — blips out which module just dropped:
 
 ## 15. Serial Command Reference
 
-Connect at **115200 baud** (USB CDC, no FTDI adapter needed on Freenove WROOM).
+Connect at **115200 baud**. The board enumerates as a **CH340** — no FTDI
+adapter needed, but the port moves; see 7.3. Opening the port does *not* reset
+the board (only `tools/bench_serial.py`'s explicit DTR/RTS sequence does), and
+serial works at the same time as the Wi-Fi dashboard.
+
+> Timing-critical sequences should be scripted with `tools/bench_serial.py`, not
+> hand-typed.
 
 | Command | Action |
 |---|---|
@@ -1003,8 +1070,8 @@ States: 0=BOOT 1=IDLE 2=ARMED 3=DROPPING 4=FAULT
 
 ```
 □ mission.json updated with correct waypoints for today's field site
-□ Filesystem uploaded: pio run --target uploadfs
-□ Firmware uploaded: pio run --target upload
+□ Firmware uploaded from the Arduino IDE, board "ESP32 Wrover Module" (7.1)
+□ SIM_MODE set deliberately in Pins.h — and limit switches wired if it is 0 (4.3)
 □ Config summary verified in serial monitor (correct coordinates, radius)
 □ Both modules loaded with seeds
 □ Limit switches verified functional (test bench)
@@ -1025,7 +1092,7 @@ States: 0=BOOT 1=IDLE 2=ARMED 3=DROPPING 4=FAULT
 □ Power on launcher (UBEC) → LED = YELLOW (IDLE)
 □ Wait for GPS fix → serial: "[MAIN] GPS stable for 10s"
 □ LED still YELLOW — GPS acquired
-□ Hold ARM button 2 seconds → LED blinks GREEN (ARMED)
+□ Hold ARM button 2 seconds → status LED 2 Hz blink + wait LED steady on (ARMED)
 □ Confirm: serial shows [SM] >>> ARMED <<<
 □ Power on drone
 □ Arm drone via RC transmitter (normal ArduPilot arm procedure)
@@ -1078,7 +1145,7 @@ States: 0=BOOT 1=IDLE 2=ARMED 3=DROPPING 4=FAULT
 | Are UART wires swapped? | Verify GNSS TX → GPIO 4, GNSS RX → GPIO 5 |
 | Is GNSS powered correctly? | 3.3V only — never connect to 5V |
 | Cold start? | Wait 90s for first fix, 10s for warm start |
-| Is baud rate correct? | Default M8N is 9600 — check platformio.ini |
+| Is baud rate correct? | Default M8N is 9600 — check `GNSSPositionSource` |
 
 ### LittleFS mount fails
 
@@ -1087,9 +1154,8 @@ States: 0=BOOT 1=IDLE 2=ARMED 3=DROPPING 4=FAULT
 ```
 | Check | Action |
 |---|---|
-| Was filesystem uploaded? | Run: `pio run --target uploadfs` |
-| Wrong partition table? | Verify `partitions_custom.csv` is in project root |
-| Board not selected correctly? | Must be ESP32S3 Dev Module in PlatformIO |
+| Nothing to upload — is the partition scheme right? | Must be "Default 4MB with spiffs" (7.1). `LittleFS.begin(true)` formats on first mount, so a genuine mount failure is a partition or flash problem, not a missing upload |
+| Board not selected correctly? | Must be **ESP32 Wrover Module** — "ESP32 Dev Module" misconfigures PSRAM (7.1) |
 
 ### Mission Planner cannot connect to Cube Orange
 
@@ -1129,5 +1195,5 @@ States: 0=BOOT 1=IDLE 2=ARMED 3=DROPPING 4=FAULT
 
 *Smart Launcher Project — Mangrove Reforestation Initiative*  
 *Hardware: Freenove ESP32-WROVER-E + DJI M600 / A3 Pro (Cube Orange+ Standard Set = Phase 4)*  
-*Firmware: ArduCopter V4.6.3 + Custom PlatformIO C++ (Arduino framework)*
+*Firmware: ArduCopter V4.6.3 (Cube Orange+) + custom Arduino C++ built with the Arduino IDE*
 
