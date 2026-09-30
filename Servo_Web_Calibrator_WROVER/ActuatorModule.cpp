@@ -32,6 +32,11 @@ void ActuatorModule::begin() {
                   _id, _servo_pin, PIN_DROP_LED, _limit_pin);
 #endif
 
+#if !LIMIT_SWITCHES_WIRED
+    Serial.printf("[ACT] Module %c: limit switch NOT WIRED - last door is timed "
+                  "(%lu ms), switch ignored\n", _id, (unsigned long)_travel_ms);
+#endif
+
     // Ensure servo starts stopped (SIM: ensures the LED starts dark)
     writeRaw(_stop_pwm_us);
 }
@@ -44,7 +49,9 @@ bool ActuatorModule::startDrop() {
 
     // Limit switch is on the LAST door only — doors 1..N-1 rely purely on
     // travel_ms timing, door N also confirms via the limit switch.
-    _is_last_door = (door_num == _door_count);
+    // With LIMIT_SWITCHES_WIRED 0 there is no switch to stop it, so the
+    // last door is just another timed door — see Pins.h.
+    _is_last_door = LIMIT_SWITCHES_WIRED && (door_num == _door_count);
     _timeout_ms   = _is_last_door ? (_travel_ms * TIMEOUT_MULTIPLIER) : _travel_ms;
     _start_ms     = millis();
     _active       = true;

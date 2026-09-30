@@ -310,6 +310,13 @@ static const char HTML_SIM_BANNER[] =
 // Mission Control tab
 static const char HTML_MISSION[] =
 "<div class='tab-panel active' id='tabMission'>"
+"<div class='card' style='margin-bottom:12px;text-align:center'><h2>APPROACH</h2>"
+"<span id='apBadge' class='badge s-stop' style='font-size:1rem;padding:6px 18px'>NO POSITION</span>"
+"<div style='font-size:1.9rem;font-weight:700;color:#f9fafb' id='apDist'>--</div>"
+"<div class='kv'>Next waypoint: <b id='apWp'>--</b></div>"
+"<div class='kv'>Speed / release max: <b id='apSpd'>--</b></div>"
+"<div class='kv'>Aim: <b id='apPred'>--</b></div>"
+"</div>"
 "<div class='row2'>"
 "<div class='card'><h2>STATE</h2>"
 "<span id='stateBadge' class='badge s-boot'>BOOT</span>"
@@ -650,6 +657,17 @@ static const char HTML3[] =
 "document.getElementById('doorsA').textContent=j.doorsA+'/'+j.doorCountA;"
 "document.getElementById('doorsB').textContent=j.doorsB+'/'+j.doorCountB;"
 "document.getElementById('dropIdx').textContent=j.dropIdx+'/'+j.dropTotal;"
+"if(j.apSt!==undefined){"
+"const AP_CLASS={'NO POSITION':'s-stop','MISSION DONE':'s-stop',FAR:'s-boot',APPROACHING:'s-idle',"
+"'SLOW DOWN':'s-fault','IN RADIUS':'s-armed',DROPPING:'s-dropping'};"
+"const ab=document.getElementById('apBadge');"
+"ab.textContent=j.apSt;ab.className='badge '+(AP_CLASS[j.apSt]||'s-stop');"
+"const live=!(j.apSt==='NO POSITION'||j.apSt==='MISSION DONE');"
+"document.getElementById('apDist').textContent=live?(j.apDist.toFixed(1)+' m (r '+j.apR.toFixed(1)+')'):'--';"
+"document.getElementById('apWp').textContent=live?('WP'+j.apWp):'--';"
+"document.getElementById('apSpd').textContent=!live?'--':j.apSpdOk?"
+"(j.apSpd.toFixed(1)+' / '+j.apMax.toFixed(1)+' m/s'):('no velocity - gate off');"
+"document.getElementById('apPred').textContent=!live?'--':j.apPred?'predicted impact':'aircraft position';}"
 "rcPaint(j);"
 "wpFixOk=j.gpsValid;"
 "const fd=document.getElementById('wpFixDot');"
@@ -1038,6 +1056,18 @@ void handleStatus() {
     j += ",\"doorCountB\":" + String(modB.doorCount());
     j += ",\"dropIdx\":" + String(engine ? engine->nextDropIndex() : 0);
     j += ",\"dropTotal\":" + String(mc.drop_count);
+    // Approach to the next waypoint — the dashboard's APPROACH card
+    if (engine) {
+        const DropLogicEngine::ApproachInfo& ap = engine->approach();
+        j += ",\"apSt\":\""  + String(DropLogicEngine::approachName(ap.state)) + "\"";
+        j += ",\"apWp\":"    + String(ap.wp_id);
+        j += ",\"apDist\":"  + String(ap.dist_m, 1);
+        j += ",\"apR\":"     + String(ap.radius_m, 1);
+        j += ",\"apSpd\":"   + String(ap.speed_mps, 1);
+        j += ",\"apSpdOk\":" + String(ap.speed_valid ? "true" : "false");
+        j += ",\"apPred\":"  + String(ap.predicted ? "true" : "false");
+        j += ",\"apMax\":"   + String(DropLogicEngine::MAX_RELEASE_SPEED_MPS, 1);
+    }
     // RC pilot trigger — live values feed the Calibration tab's RC card
     j += ",\"rcEn\":"   + String(rcIn.enabled() ? "true" : "false");
     j += ",\"rcSig\":"  + String(rcIn.hasSignal() ? "true" : "false");
@@ -1106,6 +1136,15 @@ static void handleSerialLine(String s) {
         Serial.printf("doorsA=%d doorsB=%d dropIdx=%d of %d\n",
                       modA.doorsDropped(), modB.doorsDropped(),
                       engine ? engine->nextDropIndex() : 0, mc.drop_count);
+        if (engine) {
+            const DropLogicEngine::ApproachInfo& ap = engine->approach();
+            Serial.printf("approach=%s wp=%d dist=%.1f r=%.1f speed=%.1f%s max=%.1f aim=%s\n",
+                          DropLogicEngine::approachName(ap.state), ap.wp_id,
+                          ap.dist_m, ap.radius_m, ap.speed_mps,
+                          ap.speed_valid ? "" : "(no vel, gate off)",
+                          DropLogicEngine::MAX_RELEASE_SPEED_MPS,
+                          ap.predicted ? "impact" : "aircraft");
+        }
         Serial.printf("log=%lu bytes%s  worstLoop=%lu ms\n",
                       (unsigned long)logger.bytesUsed(),
                       logger.isFull() ? " (FULL)" : "",
@@ -1132,6 +1171,12 @@ static void handleSerialLine(String s) {
         return;
     }
     if (cmd == "simclear") { simSource.clear(); return; }
+    if (cmd == "simvel") {
+        int c = rest.indexOf(' ');
+        if (c < 0) { Serial.println(F("usage: simvel <vn> <ve>")); return; }
+        simSource.injectVel(rest.substring(0, c).toFloat(), rest.substring(c + 1).toFloat());
+        return;
+    }
 
     // ── Bench-only waypoint editing ───────────────────────────────────────
     // The HTTP /mission API already does all of this, but it is reachable

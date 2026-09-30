@@ -69,13 +69,15 @@ void DropLogicEngine::update() {
         return;
     }
 
-    // --- IDLE: only evaluate new triggers when armed ---
-    if (!_sm.isArmed()) return;
-    if (missionComplete()) return;
+    // --- IDLE: track the approach always, fire only when armed ---
+    // The approach is computed disarmed too, so the dashboard shows the
+    // aircraft closing on the waypoint before the operator arms. Nothing
+    // below the isArmed() check further down can move a servo.
+    if (missionComplete()) { _approach = ApproachInfo(); _approach.state = Approach::DONE; return; }
 
     _pos.update();
     Position cur = _pos.read();
-    if (!cur.valid) return;
+    if (!cur.valid) { _approach = ApproachInfo(); return; }
 
     const MissionConfig& mc = _cfg.config();
     const DropPoint&     dp = mc.drops[_next_drop_idx];
@@ -98,6 +100,23 @@ void DropLogicEngine::update() {
     float dist = haversineDistance(aim_lat,    aim_lon,
                                    dp.lat_deg, dp.lon_deg);
 
+    const float speed    = cur.horizontalSpeed();
+    const bool  in_rad   = (dist <= dp.radius_m);
+    const bool  too_fast = cur.vel_valid && speed > MAX_RELEASE_SPEED_MPS;
+    const float zone     = fmaxf(APPROACH_ZONE_M, 4.0f * dp.radius_m);
+
+    _approach.wp_id       = dp.id;
+    _approach.dist_m      = dist;
+    _approach.radius_m    = dp.radius_m;
+    _approach.speed_mps   = cur.vel_valid ? speed : 0.0f;
+    _approach.speed_valid = cur.vel_valid;
+    _approach.predicted   = predicted;
+    _approach.state = in_rad       ? (too_fast ? Approach::SLOW_DOWN : Approach::IN_RADIUS)
+                    : dist <= zone ? Approach::APPROACHING
+                    :                Approach::FAR;
+
+    if (!_sm.isArmed()) return;
+
     // Rate-limited to 1Hz. This ran on EVERY loop iteration while armed —
     // ~30 characters at 115200 baud is ~2.6ms of blocking, thousands of
     // times per second, and Serial.printf() stalls once the TX buffer
@@ -119,8 +138,23 @@ void DropLogicEngine::update() {
             Serial.printf("[DLE] WP%d dist=%.1fm (r=%.1fm)\n", dp.id, dist, dp.radius_m);
     }
 
-    if (dist <= dp.radius_m) {
-        Serial.printf("[DLE] >>> In radius for WP%d — executing drop\n", dp.id);
+    if (in_rad && too_fast) {
+        // Rate-limited like the distance line: this holds for as long as the
+        // pilot takes to slow down, and must not flood the UART meanwhile.
+        static uint32_t last_slow_ms = 0;
+        if (now_ms - last_slow_ms >= 1000) {
+            last_slow_ms = now_ms;
+            Serial.printf("[DLE] WP%d in radius, %.1f m/s > %.1f — holding for slow-down\n",
+                          dp.id, speed, MAX_RELEASE_SPEED_MPS);
+        }
+        return;
+    }
+
+    if (in_rad) {
+        Serial.printf("[DLE] >>> In radius for WP%d at %s — executing drop\n", dp.id,
+                      cur.vel_valid ? (String(speed, 1) + " m/s").c_str()
+                                    : "unknown speed (no velocity, gate off)");
+        _approach.state = Approach::DROPPING;
         _pending_idx = _next_drop_idx;
         _pending_pos = cur;
         _manual_pair = false;
@@ -150,6 +184,19 @@ void DropLogicEngine::update() {
     }
 }
 
+const char* DropLogicEngine::approachName(Approach a) {
+    switch (a) {
+        case Approach::NO_POSITION: return "NO POSITION";
+        case Approach::DONE:        return "MISSION DONE";
+        case Approach::FAR:         return "FAR";
+        case Approach::APPROACHING: return "APPROACHING";
+        case Approach::SLOW_DOWN:   return "SLOW DOWN";
+        case Approach::IN_RADIUS:   return "IN RADIUS";
+        case Approach::DROPPING:    return "DROPPING";
+    }
+    return "?";
+}
+
 bool DropLogicEngine::launcherEmpty() const {
     return _modA.isEmpty() || _modB.isEmpty();
 }
@@ -172,6 +219,7 @@ bool DropLogicEngine::startManualPair() {
     _pending_pos = _pos.read();   // may be invalid (no fix) — logged as-is
     _manual_pair = true;
     _sm.setDropping(true);
+    _approach.state = Approach::DROPPING;
     Serial.println("[DLE] *** PILOT RC TRIGGER — Module A ***");
     _modA.startDrop();
     _phase = Phase::WAITING_A;

@@ -20,6 +20,14 @@
 #define PIN_SERVO_B   13
 #define PIN_LIMIT_A   32   // NOT GPIO 9
 #define PIN_LIMIT_B   33   // NOT GPIO 10
+
+// Limit switches on GPIO 32/33 physically connected? While 0, the last door
+// of each module is driven for travel_ms exactly like doors 1..N-1 and the
+// switch is never read. An unwired pin reads HIGH (INPUT_PULLUP) forever, so
+// with 1 and no switch the last door ran to its 3x timeout — measured at
+// 1740 ms against a 580 ms target on 2026-09-01. Set 1 only once both
+// switches are wired and seen to go LOW when pressed.
+#define LIMIT_SWITCHES_WIRED 0
 #define PIN_LED       22   // NOT GPIO 2 — plain 2-pin LED, not WS2812
 #define PIN_GNSS_RX    4
 #define PIN_GNSS_TX    5
@@ -97,7 +105,7 @@
 // flies. See SIM_MODE_VALIDATION_PLAN.md.
 //
 // 0 = flight build. Real servo PWM on GPIO 12/13.
-#define SIM_MODE 1
+#define SIM_MODE 0
 
 // Drop announce LED. Lit for exactly the window the servo is (or would be)
 // driven, then blips out which door just dropped.

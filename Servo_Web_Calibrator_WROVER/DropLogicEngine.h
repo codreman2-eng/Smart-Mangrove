@@ -21,6 +21,43 @@
 // did. This class only owns the automatic GPS-triggered sequence.
 class DropLogicEngine {
 public:
+    // ── Release gate: in radius AND slowed down ─────────────────────────
+    // Being inside the waypoint radius is not enough on its own: the seed
+    // must also leave a slow aircraft, so the pilot flies in, slows, and the
+    // release happens once horizontal speed is at or below this. Only
+    // enforced when the position source has velocity health (OSDK); on the
+    // GNSS fallback there is no speed to test and the gate stays open, which
+    // is the pre-gate behaviour.
+    static constexpr float MAX_RELEASE_SPEED_MPS = 2.0f;
+
+    // Distance from the next waypoint at which the dashboard starts reporting
+    // APPROACHING. Never smaller than a few radii, so a large radius still
+    // gets warning before the aircraft is inside it.
+    static constexpr float APPROACH_ZONE_M = 20.0f;
+
+    // What the aircraft is doing relative to the next waypoint — for the
+    // dashboard. Computed armed or not; only an ARMED engine ever fires.
+    enum class Approach : uint8_t {
+        NO_POSITION,   // no valid fix
+        DONE,          // mission complete / out of doors
+        FAR,           // outside the approach zone
+        APPROACHING,   // inside the approach zone, not yet in radius
+        SLOW_DOWN,     // in radius but faster than MAX_RELEASE_SPEED_MPS
+        IN_RADIUS,     // in radius and slow enough — fires if armed
+        DROPPING       // A->B sequence running
+    };
+    struct ApproachInfo {
+        Approach state       = Approach::NO_POSITION;
+        uint8_t  wp_id       = 0;
+        float    dist_m      = 0.0f;    // predicted impact (or aircraft) to waypoint
+        float    radius_m    = 0.0f;
+        float    speed_mps   = 0.0f;
+        bool     speed_valid = false;   // false -> speed gate not enforced
+        bool     predicted   = false;   // dist is from the impact predictor
+    };
+    const ApproachInfo& approach() const { return _approach; }
+    static const char* approachName(Approach a);
+
     DropLogicEngine(ConfigManager&   cfg,
                     IPositionSource& pos,
                     ActuatorModule&  modA,
@@ -97,6 +134,7 @@ private:
     uint8_t  _pending_idx   = 0;   // drops[] index currently in flight
     Position _pending_pos;         // position captured at trigger time, for logging
     bool     _manual_pair   = false; // in-flight sequence came from the RC trigger
+    ApproachInfo _approach;          // dashboard view of the next waypoint
 
     // drop id to log for the in-flight sequence (0 = pilot/RC commanded)
     uint8_t _currentDropId() const;
