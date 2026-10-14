@@ -210,7 +210,8 @@ happened once.
 `File → Preferences → Compiler warnings → Default` (or higher).
 
 The code contains a deliberate warning that fires when you build a
-**flight** version, reminding you that three known bugs are still unfixed.
+**flight** version, listing what still has to be measured or wired before a
+real drop can be trusted.
 At the IDE's default setting of "None" you would never see it.
 
 ---
@@ -244,6 +245,8 @@ open. Close it and try again. This has caught us three times.
 
 1. Open `Servo_Web_Calibrator_WROVER/Servo_Web_Calibrator_WROVER.ino`
 2. Check `Pins.h` line with `#define SIM_MODE` — **it must say `1`**
+   (that is the committed default; the board itself may still be carrying
+   the 2026-09-30 flight build until you reflash it)
 3. Set the board and port (§5, §6)
 4. Click the **→** arrow (Upload)
 5. Wait for `Hash of data verified` and `Hard resetting`
@@ -340,40 +343,45 @@ flight build.
 
 - The pilot RC trigger has never been tested end to end with a real remote.
 - The servos have never been driven by this firmware. Not once.
-- Module B's hardware does not exist yet.
+- The impact predictor (it aims at where the seed will land, not where the
+  drone is) is built and self-tested but has never seen real aircraft data.
+- Module B is not calibrated. The DS3225 servo tried on 2026-09-30 turned out
+  to be positional, not continuous-rotation, and was ruled out. The values on
+  the board (open=1300 stop=1500 travel=350) look like defaults.
 - Nothing has ever flown.
 
-### ⚠ Three known bugs are still in the code ON PURPOSE
+### The four known bugs are closed
 
-They were found by reading the code and left in deliberately so a test run
-could prove or disprove them rather than someone "fixing" a problem that may
-not exist.
+Four bugs were found by reading the code and deliberately left in until a
+test run could prove or disprove them. All four are now closed:
 
-**UPDATE 2026-08-25 — the run happened. #1, #2 and #4 were CONFIRMED REAL
-and are now FIXED and re-verified on hardware. #3 has also been fixed, but by
-reading the code — it was never reproduced, because it needs a mission with
-more waypoints than the board has saved. Treat #3 as "probably fixed, not
-proven": run step 12 of the validation plan when you can. See
-`PROJECT_HANDOFF.md` Phase 3e for the traces.**
+1. **Emergency stop could fire Module B** — confirmed on hardware, fixed and
+   re-verified (2026-08-25).
+2. **Emergency stop could leave the system ARMED** — confirmed, fixed and
+   re-verified (2026-08-25).
+3. **10 waypoints vs 5 doors** — closed 2026-09-01. A 10-waypoint run showed
+   the symptoms cannot happen; the inner guard never ran because an earlier
+   check always catches it first. See `PROJECT_HANDOFF.md` Phase 3g.
+4. **An aborted drop was logged as a success** — confirmed, fixed and
+   re-verified (2026-08-25).
 
-1. **Emergency stop may fire Module B.** If you press stop during an
-   automatic sequence, module B might start anyway.
-2. **Emergency stop may not disarm.** It might leave the system ARMED.
-3. **10 waypoints vs 5 doors.** If a mission has more waypoints than doors,
-   the extra ones report success without anything happening. *(Still
-   unconfirmed — needs more waypoints than the board currently has saved.)*
-4. **An aborted drop is logged as a success.** Found on 2026-08-25. Press
-   stop mid-drop and the flight log records `OK` for a door that never
-   opened.
+### Also new since then (2026-09-30)
 
-**Do not connect servos until these are resolved.** The Waypoints tab warns
-you about #3 automatically.
+- **Slow-down gate.** Being inside the waypoint radius is no longer enough:
+  the drop waits until horizontal speed is 2.0 m/s or less. This needs OSDK
+  velocity; on the GNSS fallback the gate stays open.
+- **APPROACH card** on the dashboard: FAR / APPROACHING / SLOW DOWN /
+  IN RADIUS / DROPPING, with distance and speed.
+- **Limit switches are still not wired.** `LIMIT_SWITCHES_WIRED 0` in
+  `Pins.h` makes the last door timed like the others, so it no longer
+  overdrives 3x. Wire them before relying on the last door.
 
-### Immediate housekeeping
+### Before any real mission
 
-**The flight log is FULL** (it hit its 1.1 MB limit) and has stopped
-recording. Go to the Control tab and press **Clear** twice. Do this first —
-nothing is being logged until you do.
+- **The saved mission is a bench fixture**, a 10-point test line, not a real
+  plot. Replace it from the Waypoints tab.
+- **The flight log is FULL** (1.1 MB) and has stopped recording. It holds the
+  bench history, so ask before clearing it (Control tab → **Clear** twice).
 
 ---
 
@@ -412,15 +420,18 @@ apart on one LED.
 
 In this order. Do not skip ahead.
 
-1. **Clear the flight log.** It's full.
-2. **Re-run the walk test** with the log cleared, and check whether the
-   lag we were chasing is gone. Watch "worst loop".
-3. **Run the emergency-stop tests.** Arm, trigger a drop, and press
-   EMERGENCY STOP while the announce LED is lit.
-   - If the LED lights again afterwards → bug #1 is real. Write it down.
-   - If the state stays ARMED → bug #2 is real. Write it down.
-4. **Record the results in `SIM_MODE_VALIDATION_PLAN.md`** — it has a table
-   with blank cells waiting for exactly this.
+1. **Measure `T_EXIT_S`** — how long a seed takes to clear the door. It is
+   0.0 and unmeasured, worth up to 2.9 m of error. Bench job with a 240 fps
+   phone, no drone. Follow `docs/T_EXIT_MEASUREMENT.md`; record trials in
+   `tools/t_exit_trials.csv` (still empty).
+2. **Wire the limit switches** on GPIO 32/33, check they read LOW when
+   pressed, then set `LIMIT_SWITCHES_WIRED 1`.
+3. **Check the DJI vertical-velocity sign** (`OSDK_VZ_IS_UP`): climb
+   steadily, and `vd` must go negative while altitude rises.
+4. **Power the M600 and watch for a real `[DLE] ... impact=` line.** That
+   line has never printed on real data.
+5. **The rest of `SIM_MODE_VALIDATION_PLAN.md`** — browser steps and the whole
+   RC-trigger block. Record results in its table.
 
 `SIM_MODE_VALIDATION_PLAN.md` is the test script. It has 20 numbered steps
 with a pass criterion for each. **Some steps are written so that "it fired"
@@ -440,14 +451,15 @@ happen. Read the criterion, don't assume.
 **Don't:**
 - Don't connect servos
 - Don't fly anything
-- Don't "fix" the three known bugs before testing them — the test is the point
+- Don't "fix" a suspected bug before a test has confirmed it — the test is the point
 - Don't use GPIO 2, 9, 10, 16, 17
 - Don't merge the git branch into `main`
 
 ### Git
 
 Work is on branch **`sim-mode-and-rc-trigger`**, pushed to GitHub. It is
-deliberately **not merged** into `main` because of the three known bugs.
+deliberately **not merged** into `main` yet: the RC trigger and real-servo
+drops are still unproven.
 
 ```bash
 git status                  # what have I changed?
@@ -494,6 +506,7 @@ back.
 | `PROJECT_HANDOFF.md` | Full history and reasoning. Dense but authoritative. |
 | `DESIGN_RATIONALE.md` | Why the launcher runs its own computer |
 | `SMART_LAUNCHER_COMPLETE_GUIDE.md` | Wiring, parts list, mechanical build |
+| `docs/T_EXIT_MEASUREMENT.md` | Bench procedure for the next measurement |
 | `Servo_Web_Calibrator_WROVER/` | **The main firmware** |
 | `Servo_Web_Calibrator_WROVER/Pins.h` | Pin assignments — the authority |
 | `RC_Input_Calibration_Tool.ino` | Test tool: measures an RC signal |

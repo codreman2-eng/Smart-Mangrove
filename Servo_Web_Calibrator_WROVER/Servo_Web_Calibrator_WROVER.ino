@@ -90,7 +90,7 @@
 #include "Ballistics.h"
 
 #if !SIM_MODE
-#warning "FLIGHT BUILD: defects (a) e-stop fires Module B, (b) e-stop cannot leave DROPPING and (e) aborted drop logs as OK were CONFIRMED on hardware 2026-08-25 and are FIXED and re-verified. Defect (c) 10 waypoints vs 5 doors is now FIXED TOO, but by code reading only - it has NEVER been reproduced, because it needs a mission with more waypoints than doors and the device has one waypoint saved. Run SIM_MODE_VALIDATION_PLAN.md step 12 before trusting it. Servos have still never been driven by this firmware."
+#warning "FLIGHT BUILD: real servo PWM on GPIO 12/13. All four planted defects are closed: (a), (b), (e) fixed and re-verified on hardware 2026-08-25; (c) symptoms proven unreachable 2026-09-01. Still open before trusting a drop: T_EXIT_S is 0.0 and unmeasured, limit switches are unwired (LIMIT_SWITCHES_WIRED 0 - last door is timed), OSDK_VZ_IS_UP is unverified, and the impact predictor has never seen real aircraft data. Set SIM_MODE back to 1 before committing."
 #endif
 
 // ─── Objects ────────────────────────────────────────────────────────────

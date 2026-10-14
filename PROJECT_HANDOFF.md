@@ -1619,6 +1619,59 @@ fire" from "how big is the circle" entirely and make radius purely a reject gate
 
 ---
 
+## PHASE 4b (2026-09-30): SLOW-DOWN GATE, APPROACH CARD, FIRST FLIGHT FLASH
+
+Commits `2bfd487` (single-trial driver `tools/t_exit_trial.py` for the
+`T_EXIT_S` procedure) and `22d753a`.
+
+### What was built
+
+- **Release gate.** Being in-radius is no longer enough: the drop fires only
+  once horizontal speed is <= **2.0 m/s** (`MAX_RELEASE_SPEED_MPS`). Faster than
+  that it holds and logs "holding for slow-down" at 1Hz. The gate needs
+  velocity, so it is enforced on OSDK data only; **on the GNSS fallback it stays
+  open** (old radius-only behaviour, no prediction).
+- **APPROACH card** on Mission Control and an `approach=` field in the serial
+  status: FAR / APPROACHING (within max(20m, 4r)) / SLOW DOWN / IN RADIUS /
+  DROPPING, with distance, radius, speed vs limit, and whether the aim is the
+  predicted impact or the aircraft. Computed while disarmed too; only an armed
+  engine can fire.
+- **`simvel <vn> <ve>`** (SIM only) gives the injected fix a velocity at 8m, so
+  the predictor and the gate run as they would on OSDK. Verified on the board:
+  3 m/s -> SLOW DOWN (impact 3.8m ahead), 1 m/s -> IN RADIUS, 11m out ->
+  APPROACHING.
+- **`LIMIT_SWITCHES_WIRED 0`** in `Pins.h`: the last door of each module is now
+  timed for `travel_ms` like the others and the switch is never read. This
+  removes the PHASE 3g 3x-overdrive hazard while the switches are unwired. Set
+  it to 1 only once both switches are wired and seen to go LOW.
+
+### Flashed as the flight build
+
+`22d753a` was built with `SIM_MODE 0` and flashed 2026-09-30 (port COM3 that
+day). Hash verified; the boot log confirmed real servo PWM on GPIO 12/13 and the
+limit-switch cap on both modules. **The repo default has since been set back to
+`SIM_MODE 1`** so a fresh clone flashes the safe build — the board on the bench
+is still carrying the flight build until someone reflashes it.
+
+### Servo bench findings, same day
+
+- **The DS3225 25kg servo tried for Module B is positional, not 360** — ruled
+  out. Module B stays uncalibrated; the board reads open=1300 stop=1500
+  travel=350, which look like defaults and are unconfirmed.
+- **Sudden pulse jumps (e.g. 1500 -> 500) dropped the CH340 USB link** three
+  times; gradual 20us/50ms ramps never did. Suspect a servo current spike on the
+  shared ground/5V — always ramp pulses, and put 470-1000uF at the servo supply.
+  **But** the CH340 also fell off USB once that day with no servo driven, so the
+  spike theory is incomplete.
+- Servo tests need `Servo_Calibration_Tool_B.ino` flashed (the SIM build never
+  drives servos). The launcher was reflashed afterwards; it booted all 12
+  checkpoints and `mission.json` was kept.
+- **pyserial caveat:** a default `Serial("COMx")` DOES reset the board — the
+  lines toggle before you can set them. Build it unopened, set
+  `dtr=False; rts=False`, then `open()`.
+
+---
+
 ## FLIGHT CONTROLLER (Cube Orange \u2014 separate from launcher)
 
 - User has Cube Orange Standard Set. Successfully flashed ArduCopter V4.6.3, CubeOrangePlus.
@@ -1784,7 +1837,7 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
 
 ## CURRENT EXACT STATE / WHERE WE ARE
 
-*(Last reviewed 2026-09-01, after the PHASE 3g bench run.)*
+*(Last reviewed 2026-10-14, after PHASE 4b.)*
 
 - Board settings correct: ESP32 Wrover Module, 8MB flash, QIO, 80MHz,
   Default 4MB with spiffs, upload 921600. **The COM port moves between
@@ -1797,30 +1850,35 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
   stale history — settled. Module B reads open=1300 stop=1500 travel=350ms,
   which are still defaults and still unmeasured. The stop values are worth
   re-verifying against real servos — see the plan's step 1.
-- Module B has NEVER been calibrated and its **hardware is not assembled**.
-  `Servo_Calibration_Tool_B.ino` is written and ready for whenever it exists.
+- Module B has NEVER been calibrated. The DS3225 tried on 2026-09-30 is
+  positional and was ruled out (PHASE 4b). `Servo_Calibration_Tool_B.ino` is
+  written and ready for a continuous-rotation servo.
 - **Door-to-door travel deviation on Module A is still un-characterised** (35mm
   then 41mm at the same 580ms). Still the main open MECHANICAL question, and it
   compounds across doors — see KNOWN ISSUE above.
 - **SIM mode has RUN on hardware; the RC pilot trigger has not.** The GPS
   auto-fire path was observed end to end (Phase 3d): waypoint detected at 0.0m,
   A fired 580ms, B 350ms, both logged, auto-disarm. No real RC signal has ever
-  been read. `SIM_MODE` is still **1** in `Pins.h`, so the sketch as committed
-  is the dry-run build: it will not drive the servos. Flip to 0 for a flight
-  build (and read the `#warning` it emits).
-- **The servos have still never been driven by this firmware. Not once.**
-  Everything proven so far was proven on LEDs with the servo UBEC unplugged.
+  been read. `SIM_MODE` is **1** in `Pins.h` as committed, so a fresh clone is
+  the dry-run build. **The bench board is NOT** — it was flashed with the flight
+  build (`SIM_MODE 0`) on 2026-09-30. Flip to 0 only for a supervised flight
+  build (and read the `#warning` it emits), and set it back before committing.
+- **No drop has been driven on real servos by this firmware.** Everything
+  proven so far was proven on LEDs with the servo UBEC unplugged; the flight
+  flash of 2026-09-30 only confirmed servo PWM is attached at boot.
 - **The plan's results table is now over half filled.** Steps 1, 3, 4, 6, 7a,
   9, 10, 11 and 12 all have observed results. Still open: 2, 5, 7b, 8 (browser
   and limit-switch), and the entire RC block (B1-B4, 13-20).
-- **The saved mission is now 10 waypoints at r=5.0m**, built around the real
+- **The saved mission is 10 waypoints at r=5.0m**, built around the real
   coordinate 9.0222514, -79.5322405 with ~22m spacing so the circles stay
-  disjoint. It is the defect (c) fixture; it is NOT a real plot.
-- **The flight log is NOT full** — ~474KB of a 1.1MB cap. Earlier notes saying
-  otherwise were stale.
-- Git: work is on branch **`sim-mode-and-rc-trigger`**. Merge to main when the
-  bench run has validated the rest — the RC path in particular has still never
-  seen a real signal.
+  disjoint. It is the defect (c) fixture; it is NOT a real plot — replace it
+  from the dashboard before any real mission.
+- **The flight log is FULL again** (1.1MB cap, as of 2026-09-30), so drops are
+  not being logged until `clearlog`. Not cleared yet: it holds the bench
+  history, and the owner has not agreed to delete it.
+- Git: work is on branch **`sim-mode-and-rc-trigger`**, pushed. Merge to main
+  when the bench run has validated the rest — the RC path in particular has
+  still never seen a real signal.
 
 ### Compile status (arduino-cli, core 3.3.8 — NOT PlatformIO)
 
@@ -1877,9 +1935,11 @@ PHASE 3g.)*
    c. **Power the M600 and watch a real `[DLE] ... impact=` line appear.** That
       log line has never been printed. A walk test with the SIM build proves the
       whole path with nothing moving — GPIO 14 shows the trigger.
-2. **Wire the limit switches** — promoted to a blocker by PHASE 3g. Until they
-   are wired, the last door of each module overdrives 3x. This gates ALL servo
-   work, and it also unlocks plan step 7b.
+2. **Wire the limit switches** — promoted to a blocker by PHASE 3g. Since
+   PHASE 4b, `LIMIT_SWITCHES_WIRED 0` times the last door like the others, so
+   it no longer overdrives 3x — but it is still dead-reckoned, and the switches
+   are what make the last door trustworthy. Wiring them also unlocks plan
+   step 7b.
 3. **The rest of the plan needs a human at the bench** — every LED criterion,
    steps 2 and 8 (browser), and the whole RC path, which still needs the A3
    F-channel voltage measured first. Note PHASE 4 RESEARCH's finding that the

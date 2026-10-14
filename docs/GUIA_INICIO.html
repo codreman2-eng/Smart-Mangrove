@@ -291,8 +291,8 @@ Ya ocurrió una vez.
 <p><code>Archivo → Preferencias → Advertencias del compilador → Por defecto</code>
 (o superior).</p>
 <p>El código contiene un aviso deliberado que aparece al compilar una versión
-<strong>de vuelo</strong>, recordando que hay tres errores conocidos sin
-resolver. Con la opción «Ninguna» ese aviso nunca se vería.</p>
+<strong>de vuelo</strong>, recordando qué falta medir o cablear antes de
+confiar en una siembra real. Con la opción «Ninguna» ese aviso nunca se vería.</p>
 
 <h2>6. Identificar el puerto COM</h2>
 <div class="aviso">
@@ -318,7 +318,9 @@ Serie sigue abierto. Ciérrelo y reintente. Esto nos ocurrió tres veces.
 <ol>
   <li>Abra <code>Servo_Web_Calibrator_WROVER/Servo_Web_Calibrator_WROVER.ino</code></li>
   <li>Verifique en <code>Pins.h</code> la línea <code>#define SIM_MODE</code> —
-      <strong>debe decir <code>1</code></strong></li>
+      <strong>debe decir <code>1</code></strong> (es el valor por defecto del
+      repositorio; la placa puede seguir con la versión de vuelo cargada el
+      2026-09-30 hasta que la vuelva a programar)</li>
   <li>Configure placa y puerto (Secciones 5 y 6)</li>
   <li>Pulse la flecha <strong>→</strong> (Subir)</li>
   <li>Espere <code>Hash of data verified</code> y <code>Hard resetting</code></li>
@@ -413,27 +415,43 @@ reales. Deténgase y verifique <code>SIM_MODE</code>.
 <div class="aviso">
 <ul style="margin:0">
   <li>El disparo por radiocontrol del piloto nunca se ha probado de extremo a extremo.</li>
-  <li><strong>Los servos nunca han sido accionados por este firmware. Ni una sola vez.</strong></li>
-  <li>El hardware del Módulo B todavía no existe.</li>
+  <li><strong>Este firmware nunca ha ejecutado una siembra con servos reales.</strong></li>
+  <li>El predictor de impacto (apunta a donde caerá la semilla, no a donde está
+      el dron) está implementado y autoverificado, pero nunca ha recibido datos
+      reales de la aeronave.</li>
+  <li>El Módulo B no está calibrado. El servo DS3225 probado el 2026-09-30 es
+      posicional, no de rotación continua, y quedó descartado.</li>
   <li>Nada ha volado.</li>
 </ul>
 </div>
 
-<h3>9.3 Tres errores conocidos permanecen en el código A PROPÓSITO</h3>
-<p>Fueron detectados leyendo el código pero nunca confirmados en ejecución. Se
-dejaron deliberadamente para que la próxima prueba los confirme o los descarte,
-en lugar de que alguien «corrija» un problema que quizá no exista.</p>
+<h3>9.3 Los cuatro errores conocidos están cerrados</h3>
+<p>Se detectaron leyendo el código y se dejaron a propósito hasta que una prueba
+los confirmara o descartara. Los cuatro están cerrados:</p>
 <ol>
-  <li><strong>La parada de emergencia podría accionar el Módulo B.</strong> Al
-      pulsar parada durante una secuencia automática, el módulo B podría iniciarse igualmente.</li>
-  <li><strong>La parada de emergencia podría no desarmar.</strong> Podría dejar el
-      sistema en estado ARMADO.</li>
-  <li><strong>10 puntos frente a 5 compuertas.</strong> Si la misión tiene más
-      puntos que compuertas, los sobrantes se registran como exitosos sin que ocurra nada.</li>
+  <li><strong>La parada de emergencia podía accionar el Módulo B</strong> —
+      confirmado en hardware, corregido y reverificado (2026-08-25).</li>
+  <li><strong>La parada de emergencia podía dejar el sistema ARMADO</strong> —
+      confirmado, corregido y reverificado (2026-08-25).</li>
+  <li><strong>10 puntos frente a 5 compuertas</strong> — cerrado el 2026-09-01:
+      una prueba con 10 puntos mostró que los síntomas no pueden ocurrir.</li>
+  <li><strong>Una siembra abortada se registraba como exitosa</strong> —
+      confirmado, corregido y reverificado (2026-08-25).</li>
 </ol>
+
+<h3>9.4 Novedades del 2026-09-30</h3>
+<ul>
+  <li><strong>Control de velocidad:</strong> estar dentro del radio ya no basta;
+      la siembra espera a que la velocidad horizontal sea de 2.0 m/s o menos.
+      Requiere la velocidad del OSDK; con el GNSS de respaldo no se aplica.</li>
+  <li><strong>Tarjeta APPROACH</strong> en el panel: FAR / APPROACHING /
+      SLOW DOWN / IN RADIUS / DROPPING, con distancia y velocidad.</li>
+  <li><strong>Los finales de carrera siguen sin cablear.</strong>
+      <code>LIMIT_SWITCHES_WIRED 0</code> en <code>Pins.h</code> hace que la
+      última compuerta se temporice como las demás.</li>
+</ul>
 <div class="peligro">
-<strong>No conecte los servos hasta que estos tres puntos estén resueltos.</strong>
-La pestaña <em>Waypoints</em> advierte automáticamente sobre el punto 3.
+<strong>No conecte los servos salvo que una persona supervisora lo indique.</strong>
 </div>
 
 <h2>10. Resolución de problemas</h2>
@@ -482,18 +500,18 @@ con un solo LED.</p>
 <h2 class="salto">11. Qué hacer a continuación</h2>
 <p>En este orden. No salte pasos.</p>
 <ol>
-  <li><strong>Verifique el registro de vuelo</strong> y bórrelo si está lleno
-      (pestaña Control → Clear, dos toques).</li>
-  <li><strong>Repita la prueba caminando</strong> y observe si persiste la
-      lentitud al sembrar. Vigile <em>worst loop</em>.</li>
-  <li><strong>Ejecute las pruebas de parada de emergencia.</strong> Arme, provoque
-      una siembra y pulse PARADA DE EMERGENCIA mientras el LED de aviso está encendido.
-      <ul>
-        <li>Si el LED vuelve a encenderse → el error 1 es real. Anótelo.</li>
-        <li>Si el estado permanece ARMADO → el error 2 es real. Anótelo.</li>
-      </ul></li>
-  <li><strong>Registre los resultados en <code>SIM_MODE_VALIDATION_PLAN.md</code></strong>,
-      que contiene una tabla con celdas en blanco esperando exactamente estos datos.</li>
+  <li><strong>Mida <code>T_EXIT_S</code></strong> — el tiempo que tarda la semilla
+      en salir de la compuerta. Vale 0.0 y nunca se ha medido; puede suponer
+      hasta 2.9 m de error. Trabajo de banco con un teléfono a 240 fps, sin dron:
+      siga <code>docs/T_EXIT_MEASUREMENT.md</code>.</li>
+  <li><strong>Cablee los finales de carrera</strong> en GPIO 32/33, compruebe que
+      leen LOW al pulsarlos y ponga <code>LIMIT_SWITCHES_WIRED 1</code>.</li>
+  <li><strong>Verifique el signo de la velocidad vertical de DJI</strong>
+      (<code>OSDK_VZ_IS_UP</code>): al subir, <code>vd</code> debe ser negativa.</li>
+  <li><strong>Encienda el M600 y busque una línea real <code>[DLE] ... impact=</code>.</strong>
+      Nunca se ha impreso con datos reales.</li>
+  <li><strong>El resto de <code>SIM_MODE_VALIDATION_PLAN.md</code></strong> —
+      pasos del navegador y todo el bloque de radiocontrol.</li>
 </ol>
 <div class="nota">
 <code>SIM_MODE_VALIDATION_PLAN.md</code> es el guion de pruebas: 20 pasos
@@ -502,17 +520,14 @@ la siembra se ejecute significa FALLO</strong> — son los que verifican que alg
 <em>no</em> debe ocurrir. Lea el criterio, no lo suponga.
 </div>
 
-<h3>11.1 Observación pendiente sobre el tiempo de respuesta</h3>
-<p>Se identificó y corrigió una causa importante de lentitud: un mensaje de
-diagnóstico que se imprimía por el puerto serie en cada ciclo del programa
-mientras el sistema estaba armado. Sin embargo, el indicador
-<em>worst loop</em> todavía muestra picos de 60–200 ms cuyo origen no está
-plenamente aislado; la evidencia apunta al propio volumen de mensajes por
-puerto serie. Es un punto abierto, no resuelto.</p>
-<p>Además, el punto de siembra guardado actualmente tiene un <strong>radio de
-1.0 m</strong>. La posición GPS fluctúa entre 0.5 y 1 m incluso estando quieto,
-por lo que ese radio es demasiado estrecho y puede explicar buena parte de la
-lentitud percibida. <strong>Use 10 m para las pruebas.</strong></p>
+<h3>11.1 Antes de cualquier misión real</h3>
+<ul>
+  <li><strong>La misión guardada es de banco</strong>: una línea de prueba de 10
+      puntos, no una parcela real. Reemplácela desde la pestaña Waypoints.</li>
+  <li><strong>El registro de vuelo está LLENO</strong> (1.1 MB) y no graba nada
+      nuevo. Contiene el historial de banco: consulte antes de borrarlo
+      (Control → Clear, dos toques).</li>
+</ul>
 
 <h2>12. Reglas y control de versiones</h2>
 <table>
@@ -527,7 +542,7 @@ lentitud percibida. <strong>Use 10 m para las pruebas.</strong></p>
     <td>
       <span class="prohibido">No</span> conectar los servos<br>
       <span class="prohibido">No</span> volar nada<br>
-      <span class="prohibido">No</span> corregir los tres errores conocidos antes de probarlos<br>
+      <span class="prohibido">No</span> «corregir» un error sospechado antes de que una prueba lo confirme<br>
       <span class="prohibido">No</span> usar GPIO 2, 9, 10, 16, 17<br>
       <span class="prohibido">No</span> fusionar la rama con <code>main</code>
     </td>
@@ -536,7 +551,8 @@ lentitud percibida. <strong>Use 10 m para las pruebas.</strong></p>
 
 <p>El trabajo está en la rama <code>sim-mode-and-rc-trigger</code>, publicada en
 GitHub. Deliberadamente <strong>no</strong> está fusionada con <code>main</code>
-por los tres errores conocidos.</p>
+todavía: el disparo por radiocontrol y la siembra con servos reales siguen sin
+comprobarse.</p>
 <pre>git status                  # ¿qué he modificado?
 git add -A                  # preparar todos los cambios
 git commit -m "mensaje"     # guardar un punto de control
