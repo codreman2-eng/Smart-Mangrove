@@ -97,11 +97,13 @@ void OsdkPositionSource::update() {
     if (now - _last_report_ms >= 5000) {
         _last_report_ms = now;
         Serial.printf("[OSDK] frames=%lu crcErr=%lu resync=%lu flag=0x%04X "
-                      "lat=%.7f lon=%.7f health=%u fix=%s\n",
+                      "lat=%.7f lon=%.7f health=%u fix=%s mis=%lu evt=%lu enc=%lu\n",
                       (unsigned long)_frames, (unsigned long)_crc_err,
                       (unsigned long)_resyncs, _last_flag,
                       _last.lat_deg, _last.lon_deg, _last_health,
-                      hasFix() ? "YES" : "no");
+                      hasFix() ? "YES" : "no",
+                      (unsigned long)_mis_status, (unsigned long)_mis_event,
+                      (unsigned long)_enc_frames);
         if (_frames == 0)
             Serial.println("[OSDK] no frames at all - check GPIO25 wiring, "
                            "common ground, and that the A3 is powered");
@@ -132,7 +134,13 @@ void OsdkPositionSource::_consume() {
         }
 
         _frames++;
-        _decode(fr + HDR_LEN, length - HDR_LEN - 4);
+        const uint8_t* pl  = fr + HDR_LEN;
+        const uint16_t pn  = length - HDR_LEN - 4;
+        const uint8_t  enc = (fr[4] >> 5) & 0x07;   // header bytes 4-7: pad(5) enc(3)
+        if (enc == 0 && pn >= 2 && pl[0] == 0x02 && pl[1] == 0x00)
+            _decode(pl, pn);                        // the position broadcast
+        else
+            _onOtherFrame(pl, pn, enc);             // listened to, never decoded into position
         i += length;
     }
 
@@ -144,7 +152,7 @@ void OsdkPositionSource::_consume() {
 
 bool OsdkPositionSource::_decode(const uint8_t* p, uint16_t n) {
     if (n < 4) return false;
-    if (p[0] != 0x02 || p[1] != 0x00) return false;      // not broadcast
+    if (p[0] != 0x02 || p[1] != 0x00) return false;      // not broadcast (_consume already routes these away)
 
     uint16_t flag = (uint16_t)p[2] | ((uint16_t)p[3] << 8);
     _last_flag = flag;
@@ -225,6 +233,77 @@ bool OsdkPositionSource::_decode(const uint8_t* p, uint16_t n) {
     } else {
         _last.valid = false;
     }
+    return true;
+}
+
+// ─── Everything that is not the position broadcast ─────────────────────
+// Listen-only. Before this existed, _decode() discarded every frame that was
+// not 0x02/0x00 without a trace, so if the A3 was already sending mission
+// pushes nobody would have known.
+void OsdkPositionSource::_onOtherFrame(const uint8_t* p, uint16_t n, uint8_t enc) {
+    // An encrypted payload hides cmd_set/cmd_id too, so it cannot be sorted.
+    // Report the first one; the counter keeps the rest.
+    if (enc != 0) {
+        if (_enc_frames++ == 0) {
+            Serial.printf("[OSDK] first ENCRYPTED frame (enc=%u, %u bytes) - "
+                          "contents unreadable without activation\n", enc, n);
+            _queue(OsdkMissionMsg::ENCRYPTED, p, n, enc);
+        }
+        return;
+    }
+    if (n < 2) return;
+    const uint8_t set = p[0], id = p[1];
+
+    if (set == 0x02 && id == 0x03) {                 // Ground Station State
+        _mis_status++;
+        uint8_t cur[6] = {0};
+        memcpy(cur, p + 2, min<uint16_t>(6, n - 2));
+        if (_have_status && memcmp(cur, _last_status, sizeof(cur)) == 0) return;
+        memcpy(_last_status, cur, sizeof(cur));
+        _have_status = true;
+        Serial.printf("[OSDK] MISSION status type=%u wp=%u st=%u err=%u (%u bytes)\n",
+                      cur[0], cur[1], cur[2], cur[3], n);
+        _queue(OsdkMissionMsg::STATUS, p, n, enc);
+        return;
+    }
+    if (set == 0x02 && id == 0x04) {                 // Waypoint Event
+        _mis_event++;
+        Serial.printf("[OSDK] MISSION event inc=%u wp=%u st=%u (%u bytes)\n",
+                      n > 2 ? p[2] : 0, n > 3 ? p[3] : 0, n > 4 ? p[4] : 0, n);
+        _queue(OsdkMissionMsg::EVENT, p, n, enc);
+        return;
+    }
+
+    // Any other pair: report its first sighting only. 0x02/0x01 (lost of
+    // flight control) or 0x02/0x02 (mobile pass-through) would land here.
+    const uint16_t key = ((uint16_t)set << 8) | id;
+    for (uint8_t k = 0; k < _seen_n; k++)
+        if (_seen[k] == key) return;
+    if (_seen_n >= SEEN_SZ) return;
+    _seen[_seen_n++] = key;
+    Serial.printf("[OSDK] first frame of cmd 0x%02X/0x%02X (%u bytes)\n", set, id, n);
+    _queue(OsdkMissionMsg::NEW_CMD, p, n, enc);
+}
+
+void OsdkPositionSource::_queue(OsdkMissionMsg::Kind k, const uint8_t* p,
+                                uint16_t n, uint8_t enc) {
+    OsdkMissionMsg& m = _mq[_mq_head];
+    m.kind    = k;
+    m.ms      = millis();
+    m.cmd_set = (enc == 0 && n > 0) ? p[0] : 0;
+    m.cmd_id  = (enc == 0 && n > 1) ? p[1] : 0;
+    m.enc     = enc;
+    m.len     = n;
+    memset(m.raw, 0, sizeof(m.raw));
+    memcpy(m.raw, p, min<uint16_t>(sizeof(m.raw), n));
+    _mq_head = (_mq_head + 1) % MQ_SZ;
+    if (_mq_count < MQ_SZ) _mq_count++;             // full: oldest overwritten
+}
+
+bool OsdkPositionSource::popMission(OsdkMissionMsg& out) {
+    if (_mq_count == 0) return false;
+    out = _mq[(_mq_head + MQ_SZ - _mq_count) % MQ_SZ];
+    _mq_count--;
     return true;
 }
 

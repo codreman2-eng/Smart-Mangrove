@@ -2,6 +2,36 @@
 #include "PositionSource.h"
 #include <HardwareSerial.h>
 
+// One non-broadcast frame worth recording, queued for the flight log.
+//
+// WHY THIS EXISTS (reports/Estado de waypoints en el M600.md): DJI's Open
+// Protocol defines two unsolicited mission pushes on this same API UART,
+// besides the 0x02/0x00 broadcast:
+//   0x02/0x03 Ground Station State   mission_type, waypoint_index,
+//                                    current_status (0 pre-mission,
+//                                    1 in-action, 5 first waypt, 6 reached),
+//                                    error_notification, reserved u16
+//   0x02/0x04 Waypoint Event         incident_type, waypoint_index,
+//                                    current_status (4 pre-action,
+//                                    6 post-action), reserved x2
+// (layouts from OSDK 3.9 dji_ack.hpp, #pragma pack(1)). Whether the A3 emits
+// them for a GS Pro mission, to a never-activated device, is UNKNOWN — DJI's
+// only public answer was not encouraging. This only LISTENS so a bench or
+// simulator run can settle it. Nothing here is fed to drop logic.
+struct OsdkMissionMsg {
+    enum Kind : uint8_t {
+        STATUS    = 0,   // 0x02/0x03
+        EVENT     = 1,   // 0x02/0x04
+        NEW_CMD   = 2,   // first sighting of any other cmd_set/cmd_id pair
+        ENCRYPTED = 3,   // first encrypted frame: cmd bytes are unreadable
+    };
+    Kind     kind;
+    uint32_t ms;
+    uint8_t  cmd_set, cmd_id, enc;
+    uint16_t len;          // payload bytes, cmd_set/cmd_id included
+    uint8_t  raw[8];       // payload from cmd_set on, zero-padded
+};
+
 // Position from the DJI M600's A3 Pro Onboard SDK broadcast.
 //
 // READ-ONLY BY CONSTRUCTION. The A3 broadcasts unprompted — verified on
@@ -56,6 +86,15 @@ public:
     uint16_t passFlag()  const { return _last_flag; }
     uint32_t lastFixMs() const { return _last_fix_ms; }
 
+    // Mission pushes (see OsdkMissionMsg). STATUS is queued only when its
+    // bytes change — if the A3 does send it, it may repeat at a steady rate,
+    // and the flight log has a hard cap. The counters still count every frame.
+    uint32_t missionStatusFrames() const { return _mis_status; }
+    uint32_t missionEventFrames()  const { return _mis_event; }
+    uint32_t encryptedFrames()     const { return _enc_frames; }
+    // Pops the oldest queued message; false when the queue is empty.
+    bool     popMission(OsdkMissionMsg& out);
+
 private:
     HardwareSerial* _serial;
     uint8_t  _uart_num;
@@ -78,8 +117,27 @@ private:
     // Bounded work per update() so a burst can never monopolise loop().
     static const uint16_t MAX_BYTES_PER_UPDATE = 512;
 
+    // ── Mission pushes ────────────────────────────────────────────────
+    uint32_t _mis_status = 0, _mis_event = 0, _enc_frames = 0;
+    uint8_t  _last_status[6] = {0};
+    bool     _have_status = false;
+
+    // Small ring; on overflow the oldest is overwritten. 8 is plenty: the
+    // loop drains it every pass, and events arrive at most a few per waypoint.
+    static const uint8_t MQ_SZ = 8;
+    OsdkMissionMsg _mq[MQ_SZ];
+    uint8_t  _mq_head = 0, _mq_count = 0;
+
+    // cmd pairs already reported as NEW_CMD (broadcast 0x02/0x00 excluded).
+    static const uint8_t SEEN_SZ = 16;
+    uint16_t _seen[SEEN_SZ];
+    uint8_t  _seen_n = 0;
+
     void _consume();
     bool _decode(const uint8_t* payload, uint16_t n);
+    void _onOtherFrame(const uint8_t* payload, uint16_t n, uint8_t enc);
+    void _queue(OsdkMissionMsg::Kind k, const uint8_t* payload, uint16_t n,
+                uint8_t enc);
 };
 
 // Prefers a primary source, falls back to a secondary when the primary goes

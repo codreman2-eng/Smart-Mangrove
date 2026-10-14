@@ -1085,6 +1085,9 @@ void handleStatus() {
     j += ",\"osdkErr\":" + String(osdkSource.crcErrors());
     j += ",\"osdkFlag\":" + String(osdkSource.passFlag());
     j += ",\"osdkOk\":"  + String(osdkSource.hasFix() ? "true" : "false");
+    j += ",\"osdkMis\":" + String(osdkSource.missionStatusFrames());
+    j += ",\"osdkEvt\":" + String(osdkSource.missionEventFrames());
+    j += ",\"osdkEnc\":" + String(osdkSource.encryptedFrames());
     j += ",\"posSrc\":\"" + String(realSource.onPrimary() ? "OSDK" : "GNSS") + "\"";
     j += ",\"loopMax\":" + String(loop_max_report / 1000);   // ms
 #if SIM_MODE
@@ -1590,6 +1593,27 @@ void loop() {
         snprintf(ex, sizeof(ex), "\"band\":\"%s\",\"us\":%u",
                  RcPwmInput::bandName(rcIn.band()), rcIn.widthUs());
         logger.logEvent("rc_band", ex);
+    }
+    // OSDK mission pushes (0x02/0x03, 0x02/0x04) and first sightings of any
+    // other cmd pair. Logged only — nothing here reaches drop logic. The point
+    // is to learn on a GS Pro run whether the A3 sends them at all; see
+    // reports/Estado de waypoints en el M600.md. Serial cannot be watched in
+    // flight, so the flight log is the record that matters.
+    {
+        OsdkMissionMsg m;
+        while (osdkSource.popMission(m)) {
+            static const char* const KIND[] = {"status", "event", "new_cmd", "encrypted"};
+            char raw[17];
+            for (uint8_t b = 0; b < 8; b++)
+                snprintf(raw + 2 * b, 3, "%02X", m.raw[b]);
+            char ex[160];
+            snprintf(ex, sizeof(ex),
+                     "\"kind\":\"%s\",\"cmd\":\"%02X/%02X\",\"enc\":%u,\"len\":%u,"
+                     "\"b2\":%u,\"wp\":%u,\"st\":%u,\"b5\":%u,\"raw\":\"%s\"",
+                     KIND[m.kind], m.cmd_set, m.cmd_id, m.enc, m.len,
+                     m.raw[2], m.raw[3], m.raw[4], m.raw[5], raw);
+            logger.logEvent("osdk_mission", ex);
+        }
     }
     sectMark(SECT_EVT);
 
