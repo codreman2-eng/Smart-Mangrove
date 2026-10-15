@@ -2,8 +2,9 @@
 
 **Project:** Autonomous drone seed release system for mangrove reforestation  
 **Hardware:** Freenove ESP32-WROVER-E + DJI M600 / A3 Pro (Cube Orange+ = Phase 4)  
-**Version:** Phase 2 — Firmware Skeleton  
-**Last updated:** 2026
+**Version:** Phase 4c — configurable release gate (dwell, speed, radius)  
+**Last updated:** 2026-10-15 (wiring §4.1/4.5/4.7, §8.2, §10.2, §15). Sections 11, 12
+and 16 still describe the Cube Orange / ArduPilot path and are not current for the DJI approach.
 
 ---
 
@@ -94,12 +95,20 @@ The cover only moves in **one direction** (retract). Seeds fall by gravity. The 
 
 ### Position source selection
 
-| Mode | Source | When to use |
-|---|---|---|
-| `GNSS` | Onboard u-blox M8N on UART1 | Any drone — fully independent |
-| `MAVLINK` | Cube Orange TELEM2 on UART2 | DIY ArduPilot drones — higher accuracy |
+> The diagram above is the original ArduPilot plan. **The path flown today is
+> the DJI M600:** the A3's API port broadcasts position and velocity to the
+> launcher over one receive-only wire (section 4.5).
 
-Set `position_source` in `mission.json`. No reflash needed to switch.
+The firmware picks the source itself — there is nothing to set:
+
+| Priority | Source | Notes |
+|---|---|---|
+| 1 | DJI A3 OSDK broadcast, UART2 (GPIO 25) | ~47 Hz, position + velocity + height. Enables the impact predictor and the speed gate |
+| 2 | Onboard u-blox M8N, UART1 (GPIO 4/5) | Automatic fallback when OSDK goes stale (>500 ms). 1 Hz, no velocity |
+| — | Cube Orange TELEM2 (MAVLink) | **Not implemented** — Phase 4 plan only |
+
+`position_source` in `mission.json` is parsed but **not used**; the OSDK →
+GNSS fallback order above is fixed in firmware.
 
 ---
 
@@ -153,9 +162,9 @@ Set `position_source` in `mission.json`. No reflash needed to switch.
 | Status LED | GPIO 22 | OUT | 3.3V | Plain 2-pin LED + 330R. **Not** the board's built-in |
 | Wait LED (yellow) | GPIO 27 | OUT | 3.3V | 330R to GND. Steady ON = ARMED |
 | Drop announce LED | GPIO 14 | OUT | 3.3V | 330R to GND. Lit for the servo drive window |
-| RC pilot trigger | GPIO 35 | IN | 3.3V | Input-only pin — **external 10k pull-down required** |
+| RC pilot trigger | GPIO 35 | IN | — | **Not wired** (F-channel wire removed 2026-10-14). Reserved; trigger ships disabled. See 4.5 |
 | OSDK RX | GPIO 25 | IN | 3.3V | ← DJI A3 Pro API port TX, 921600 baud (UART2) |
-| OSDK TX | GPIO 26 | OUT | 3.3V | Wired for future use; never driven — the link is receive-only |
+| OSDK TX | GPIO 26 | — | — | **Not connected.** Reserved for UART2 TX; never driven — the link is receive-only |
 | GNSS UART RX | GPIO 4 | IN | 3.3V | ← GNSS module TX (UART1) |
 | GNSS UART TX | GPIO 5 | OUT | 3.3V | → GNSS module RX (UART1) |
 | ARM button | GPIO 0 | IN | 3.3V | Onboard BOOT button, hold 2s **after** boot. Secondary path — the dashboard ARM button is primary |
@@ -243,9 +252,11 @@ RX              → GPIO 5 (ESP32 UART1 TX)
 
 ---
 
-### 4.5 DJI M600 / A3 Pro wiring (primary position + pilot trigger)
+### 4.5 DJI M600 / A3 Pro wiring (primary position — the only aircraft wire)
 
 This is the link that is actually flown today; the M8N above is the fallback.
+**It is the only connection between the launcher and the aircraft's
+electronics** (besides power).
 
 **API port → OSDK position (receive-only):**
 
@@ -254,36 +265,56 @@ A3 "API" port pin → ESP32
 ──────────────────────────────────────────────────
 TX                → GPIO 25   (330R series optional)
 GND               → GND       ← MANDATORY
-RX                → NOT CONNECTED
+RX                → NOT CONNECTED   (GPIO 26 stays unconnected)
 VCC               → NOT CONNECTED
 ```
 
 Both sides are 3.3V — no level shifter. 921600 baud, as set in DJI Assistant 2.
 **The launcher never transmits on this link** — that is a design rule, not a
-limitation. Trimming the broadcast in Assistant 2 to POSITION+GPS+RC+STATUS cuts
-the frame from 231 to ~60 bytes, which is safe: the decoder computes field
-offsets from the `passFlag`.
+limitation.
 
-**F-channel → pilot RC trigger:**
+**DJI Assistant 2 broadcast settings — keep VELOCITY on.** The broadcast must
+include **POSITION (bit 5)** and **VELOCITY (bit 3)**. Everything the release
+gate uses arrives on this one wire: position, height above takeoff, and the
+velocity vector the impact predictor and the speed limit read. Without
+VELOCITY both switch off silently — the speed gate fails **open** and the
+dashboard's APPROACH card shows "no velocity - gate off". TIME, QUATERNION,
+ACCEL and ANG_RATE can be trimmed to shorten the frame; the decoder computes
+field offsets from the `passFlag`. (Earlier versions of this guide said to trim
+to POSITION+GPS+RC+STATUS — that predates the predictor and would disable it.)
 
-```
-A3 F-channel signal → ESP32 GPIO 35
-                    → 10k pull-down from GPIO 35 to GND   ← REQUIRED
-A3 GND              → ESP32 GND                            ← MANDATORY
-```
+**Mission pushes over the same wire (unverified).** The A3 may also send
+`0x02/0x03` (mission state) and `0x02/0x04` (waypoint event) on this TX line
+when "Ground Station Status" is ticked in Assistant 2's SDK page. The firmware
+logs them and the dashboard's DJI MISSION card counts them; nothing fires on
+them. Whether the A3 sends them for a GS Pro mission is the open question in
+`reports/Estado de waypoints en el M600.md`. No extra wiring either way.
 
-GPIO 35 is input-only (34–39 are), so no firmware bug can ever back-drive the
-flight controller — that is the reason for the choice, not convenience.
-Input-only pins have **no internal pull resistor**, so without the external 10k
-pull-down a disconnected signal wire floats and reads as noise instead of
-"no signal".
+**F-channel → GPIO 35 pilot trigger: NOT WIRED.** Removed from this guide on
+2026-10-14. The firmware input still exists and the dashboard still shows the
+card, but the trigger ships **disabled** (`rc_trigger.enabled = false`) because
+an unwired input-only pin has no pull resistor and floats. If the GS Pro
+"PWM signal output to F-channel" waypoint action is adopted later, the wire
+comes back with: the F-channel voltage **measured first** (GPIO 35 is not 5V
+tolerant — 10k/20k divider if it reads 5V), an external **10k pull-down** from
+GPIO 35 to GND, common ground, then `RC_Input_Calibration_Tool.ino` before the
+dashboard trigger is enabled.
 
-> **MEASURE THE F-CHANNEL VOLTAGE BEFORE CONNECTING.** It should be 3.3V logic.
-> If it reads 5V, fit a 10k/20k divider or a level shifter — the ESP32 is not 5V
-> tolerant.
+### 4.5a What the release settings need from the wiring
 
-Bring-up: use `RC_Input_Calibration_Tool.ino` (repo root) before trusting this
-path in the dashboard firmware.
+Nothing new. The dashboard's RELEASE SETTINGS (max speed, dwell, default
+radius — section 10.2) are pure software acting on data from the A3 API wire
+above:
+
+| Setting | Data it needs | Comes from |
+|---|---|---|
+| Radius (per waypoint) | Position (+ predicted impact) | API TX → GPIO 25, POSITION field |
+| Max release speed | Horizontal velocity | API TX → GPIO 25, VELOCITY field |
+| Impact prediction | Velocity + height above takeoff | API TX → GPIO 25, VELOCITY + POSITION |
+| Dwell | Time + the two above | ESP32 clock |
+
+On the GNSS fallback (M8N on GPIO 4/5) there is no velocity: radius and dwell
+still apply, the speed gate and prediction do not.
 
 ---
 
@@ -336,8 +367,8 @@ Pin 6               → GND       → GND (common ground)
   │  GPIO 4  ◀──────────────────────────────────── GNSS TX              │
   │  GPIO 5  ──────────────────────────────────▶   GNSS RX              │
   │  GPIO 25 ◀──────────────────────────────────── A3 API TX (OSDK)     │
-  │  GPIO 26 ──────────────────────────────────▶   A3 API RX (unused)   │
-  │  GPIO 35 ◀──── 10kΩ pull-down to GND ────────  A3 F-channel (RC)    │
+  │  GPIO 26     (not connected — A3 API RX stays open)                 │
+  │  GPIO 35     (not connected — RC trigger reserved, disabled)        │
   │  GPIO 12 ──────────────────────────────────▶   Servo A signal (org) │
   │  GPIO 13 ──────────────────────────────────▶   Servo B signal (org) │
   │  GPIO 32 ◀──── internal pullup ──── Limit SW A NO ──── GND          │
@@ -351,7 +382,9 @@ Pin 6               → GND       → GND (common ground)
   └──────────────────────────────────────────────────────────────────────┘
 
   Note: the limit-switch 10kΩ pullups are INTERNAL (INPUT_PULLUP) — no external
-  resistors needed. The GPIO 35 pull-DOWN is EXTERNAL and IS required.
+  resistors needed. GPIO 35 needs an EXTERNAL 10kΩ pull-down only if the
+  F-channel is ever wired (4.5). The A3 → ESP32 link is ONE signal wire
+  (API TX → GPIO 25) plus ground.
   Never use GPIO 2, 9, 10, 16 or 17 on this board — see 4.1.
 ```
 
@@ -602,15 +635,22 @@ ARMED ──(hold ARM 2s)────▶ IDLE  (disarm)
 ```
 
 #### DropLogicEngine
-- Called every loop iteration (20 Hz)
-- Reads current position and computes Haversine distance to next pending waypoint
-- When distance < `radius_m` AND system is ARMED:
-  1. Sets state → DROPPING
-  2. Calls `modA.dropNext()` — blocks until complete
-  3. Immediately calls `modB.dropNext()` — sequential confirm
-  4. Sets state → ARMED
-  5. Advances to next waypoint
-- Logs every drop event to serial and LittleFS
+- Called every `loop()` iteration; non-blocking (tracks IDLE / WAITING_A /
+  WAITING_B itself, so the dashboard keeps running during a drop)
+- Predicts where a seed released now would land (`Ballistics.h`, needs OSDK
+  velocity; otherwise uses the aircraft position) and measures the Haversine
+  distance from that point to the next pending waypoint
+- **Release gate** — fires only when ARMED and all three hold:
+  1. distance ≤ the waypoint's `radius_m`
+  2. horizontal speed ≤ `release.max_speed_mps` (OSDK only; open on GNSS)
+  3. 1 and 2 have held continuously for `release.dwell_s` while armed
+     (any exit, or a disarm, restarts the count)
+- Then: state → DROPPING, module A drives one door, B fires as soon as A
+  reports done, back to ARMED, next waypoint
+- Logs a `release` row (distance, radius, speed, limit, dwell, predicted or
+  not) and one `drop` row per module to the JSONL flight log
+- Reports FAR / APPROACHING / SLOW DOWN / SETTLING / IN RADIUS / DROPPING to the
+  dashboard's APPROACH card, armed or not
 
 #### Logger
 - Writes human-readable CSV to `/logs/flight.log` on LittleFS
@@ -635,7 +675,12 @@ T+702 ms  State = ARMED, advance to next waypoint
 
 Total time per waypoint: **~700 ms** (at 350 ms travel_ms)
 
-At typical drone mission speed of 3 m/s, the drone travels ~2.1 m during this window. Tune `radius_m` accordingly (3–5 m recommended).
+The release now waits for speed ≤ `release.max_speed_mps` (2.0 m/s by
+default), so the aircraft moves at most ~1.4 m during this window. The fall
+carry (2.6 m at 2 m/s from 8 m) is aimed for by the impact predictor when OSDK
+velocity is available. With the predictor active, `radius_m` is an accuracy
+tolerance — "fire when the seed is predicted to land within X m" — 5 m by
+default.
 
 ---
 
@@ -701,8 +746,8 @@ See 7.4. The annotated structure below documents the file's schema.
   // Prevents arming in poor reception. Range: 5–30s recommended.
 
   "position_source": "GNSS",
-  // "GNSS" = use onboard u-blox M8N (default, works on any drone)
-  // "MAVLINK" = use Cube Orange TELEM2 (Phase 4, higher accuracy)
+  // Parsed but NOT used. The firmware always takes DJI OSDK position first
+  // and falls back to the onboard M8N automatically (see section 2).
 
   "modules": {
     "A": {
@@ -733,11 +778,34 @@ See 7.4. The annotated structure below documents the file's schema.
     }
   },
 
+  "rc_trigger": {
+    "enabled": false,
+    // Pilot trigger on GPIO 35. Ships DISABLED: the F-channel is not wired
+    // (section 4.5). Thresholds below are nominal, never measured on the A3.
+    "safe_max_us": 1300, "fire_min_us": 1700,
+    "frames_to_confirm": 5, "signal_timeout_ms": 500
+  },
+
+  "release": {
+    // When an ARMED launcher fires. Edited from the dashboard:
+    // Waypoints tab -> RELEASE SETTINGS -> Apply + Save. An absent block
+    // means these defaults (the 2026-09-30 behaviour).
+    "max_speed_mps": 2.0,
+    // Horizontal speed at or below which a release is allowed (0.1-15).
+    // Needs OSDK velocity; on the GNSS fallback the speed gate is open.
+    "dwell_s": 0.0,
+    // Seconds the in-radius-and-slow condition must hold, armed, before
+    // firing (0-30). 0 = fire on the first qualifying sample. 1-2 s for a
+    // hover drop. Any exit from the radius or speed window restarts it.
+    "default_radius_m": 5.0
+    // Radius given to new waypoints ("ADD WAYPOINT HERE", `wpadd`) and the
+    // value "Default radius -> all waypoints" applies (0.5-100).
+  },
+
   "drops": [
-    // One entry per seed drop. Waypoints 1-5 use Module A door 1-5.
-    // Waypoints 6-10 use Module B door 1-5 (synchronized with A).
-    // Actually: each drop entry fires BOTH modules simultaneously (one door each).
-    // 10 entries = 5 drops × 2 modules = 10 seeds total.
+    // One entry per drop point, max 10. Each entry fires ONE door of Module A,
+    // then ONE door of Module B as soon as A reports done (sequential, for
+    // balance). 5 doors per module = 5 drop points per load.
 
     { "id": 1, "lat_deg": 9.345678, "lon_deg": -79.876543, "alt_m": 8.0, "radius_m": 3.0 },
     { "id": 2, "lat_deg": 9.345700, "lon_deg": -79.876520, "alt_m": 8.0, "radius_m": 3.0 },
@@ -745,9 +813,11 @@ See 7.4. The annotated structure below documents the file's schema.
     { "id": 4, "lat_deg": 9.345744, "lon_deg": -79.876474, "alt_m": 8.0, "radius_m": 3.0 },
     { "id": 5, "lat_deg": 9.345766, "lon_deg": -79.876451, "alt_m": 8.0, "radius_m": 3.0 }
 
-    // radius_m: trigger distance in metres. 
-    // Recommended 3.0–5.0m for 3 m/s drone speed.
-    // Increase if drops are being missed; decrease for tighter placement.
+    // radius_m: release tolerance in metres, tested against the PREDICTED
+    // IMPACT point (aircraft position without OSDK velocity). Per waypoint,
+    // editable in the Waypoints tab list. 5 m is the smallest that survives
+    // the 1 Hz GNSS fallback; use 10 m for bench/walk tests.
+    // alt_m is informational — the fall time uses the A3's height above takeoff.
   ]
 }
 ```
@@ -1044,23 +1114,38 @@ serial works at the same time as the Wi-Fi dashboard.
 > Timing-critical sequences should be scripted with `tools/bench_serial.py`, not
 > hand-typed.
 
-| Command | Action |
-|---|---|
-| `help` | Print all available commands |
-| `arm` | Force ARM state (bypasses GPS stability check — bench only) |
-| `disarm` | Return to IDLE state |
-| `status` | Print current state, GPS position, door counts |
-| `dropa` | Manually trigger Module A — one door drop |
-| `dropb` | Manually trigger Module B — one door drop |
-| `reset` | Reset door counters on both modules to 0 |
-| `log` | Dump entire flight log to serial |
+Deliberately **no servo-moving commands**: motion stays behind the
+dashboard's two-tap confirm.
 
-**Example status output:**
+| Command | Builds | Action |
+|---|---|---|
+| `help` | all | List the commands |
+| `status` | all | State, position + source, OSDK health, doors, approach (state, distance, radius, speed vs limit, dwell), log size, worst loop |
+| `arm` / `disarm` | all | Same as the dashboard buttons (no GPS-stability gate) |
+| `stop` | all | Emergency stop — the same function as the dashboard's red bar |
+| `wp` | all | List the waypoints with their radii |
+| `rel` | all | Print the release settings |
+| `rel <max_mps> <dwell_s> [default_r]` | SIM | Set them (RAM only — `wpsave` writes mission.json). Blocked while armed |
+| `clearlog` | all | Delete the flight log (ask first — it may hold bench history) |
+| `simpos <lat> <lon>` / `simclear` | SIM | Inject / clear a fake position |
+| `simvel <vn> <ve>` | SIM | Give the injected fix a velocity (m/s) at 8 m, so prediction and speed gate run |
+| `wpadd <lat> <lon> [r] [alt]` | SIM | Add a waypoint (r defaults to `release.default_radius_m`) |
+| `wpradius <idx\|all> <r>` | SIM | Change a radius (1-based index, or all) |
+| `wpclear` / `wpsave` | SIM | Clear the list / write mission.json |
+| `balltest` | SIM | Impact-predictor self-test vectors |
+
+**Example `status` output (SIM, armed, settling):**
 ```
-[CMD] State=2 Armed=1 GPS valid=1 lat=9.345678 lon=-79.876543
+state=2 armed=1 dropping=0
+pos valid=1 9.0222514, -79.5322405 alt=8.0 src=OSDK
+osdk frames=0 crcErr=0 health-fix=0
+doorsA=0 doorsB=0 dropIdx=0 of 10
+approach=SETTLING wp=1 dist=0.6 r=5.0 speed=0.5 max=2.0 dwell=1.2/2.0 aim=impact
+log=474112 bytes  worstLoop=2 ms
 ```
 
-States: 0=BOOT 1=IDLE 2=ARMED 3=DROPPING 4=FAULT
+States: 0=BOOT 1=IDLE 2=ARMED 3=DROPPING 4=FAULT. The flight log is read
+from the dashboard (Control tab) or `/log?tail=0`, not over serial.
 
 ---
 

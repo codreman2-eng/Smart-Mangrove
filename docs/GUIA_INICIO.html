@@ -63,8 +63,8 @@
   <div class="sub">Sistema de siembra aérea de propágulos de mangle</div>
   <div class="sub" style="font-size:11pt;margin-top:14pt">Guía de Inicio para Nuevos Integrantes</div>
   <div class="meta">
-    Versión del documento: 1.0<br>
-    Fecha: 13 de agosto de 2026<br>
+    Versión del documento: 1.1<br>
+    Fecha: 15 de octubre de 2026<br>
     Repositorio: <code>Smart-Mangrove</code> — rama <code>sim-mode-and-rc-trigger</code>
   </div>
   <div class="aviso">
@@ -179,11 +179,25 @@ Módulo B. Ese orden mantiene equilibrada la aeronave.</p>
 
 <h3>2.2 Cómo decide sembrar</h3>
 <ol>
-  <li><strong>Automático:</strong> se guarda una lista de coordenadas. Cuando el
-      lanzador entra en el radio configurado de una de ellas, siembra.</li>
+  <li><strong>Automático:</strong> se guarda una lista de coordenadas. Con el
+      sistema armado, siembra cuando se cumplen <strong>las tres</strong> condiciones:
+      <ul>
+        <li>el punto donde <em>caería</em> la semilla (se predice la caída a partir
+            de la velocidad del dron) está dentro del <strong>radio</strong> de ese
+            punto (5 m por defecto);</li>
+        <li>la velocidad horizontal del dron es igual o menor que la
+            <strong>velocidad máxima</strong> (2.0 m/s por defecto);</li>
+        <li>ambas se han mantenido durante el <strong>tiempo de espera</strong>
+            (<em>dwell</em>; 0 s por defecto, 1–2 s para una siembra en
+            estacionario).</li>
+      </ul>
+      Las tres se ajustan en la pestaña Waypoints del panel
+      (<strong>RELEASE SETTINGS</strong>). La velocidad y la predicción requieren
+      la velocidad del DJI; con el GPS de respaldo solo se aplican el radio y la
+      espera.</li>
   <li><strong>Disparo del piloto:</strong> el piloto acciona un interruptor del
       radiocontrol. Está implementado pero <em>nunca se ha probado de extremo a
-      extremo</em>.</li>
+      extremo</em>, <strong>no está cableado</strong> y viene desactivado.</li>
 </ol>
 
 <h2 class="salto">3. El hardware</h2>
@@ -207,9 +221,9 @@ Módulo B. Ese orden mantiene equilibrada la aeronave.</p>
   <tr><td>GPIO 22</td><td>LED de estado (parpadea un patrón según el estado)</td></tr>
   <tr><td>GPIO 27</td><td>LED amarillo de «en espera»</td></tr>
   <tr><td>GPIO 14</td><td>LED de aviso de siembra</td></tr>
-  <tr><td>GPIO 35</td><td>Entrada del disparo del piloto (pin de solo entrada)</td></tr>
-  <tr><td>GPIO 25</td><td>Entrada serie del OSDK (DJI)</td></tr>
-  <tr><td>GPIO 26</td><td>Salida serie del OSDK (cableada, nunca utilizada)</td></tr>
+  <tr><td>GPIO 35</td><td>Entrada del disparo del piloto — <strong>sin cablear</strong> al dron</td></tr>
+  <tr><td>GPIO 25</td><td>Entrada serie del OSDK (DJI) — el único cable que viene del dron</td></tr>
+  <tr><td>GPIO 26</td><td>Reservado para la salida serie del OSDK — <strong>sin conectar</strong></td></tr>
   <tr><td>GPIO 4 / 5</td><td>Módulo GPS</td></tr>
 </table>
 
@@ -246,6 +260,16 @@ Puerto «API» del A3  RX / VCC            NO CONECTAR</pre>
 <strong>Este enlace es de solo recepción</strong>: el lanzador escucha, nunca
 envía órdenes a la aeronave. Es una regla de diseño deliberada, no una
 limitación.</p>
+<div class="aviso">
+En <strong>DJI Assistant 2</strong>, el broadcast de este puerto debe mantener
+activados <strong>POSITION</strong> y <strong>VELOCITY</strong>. Sin VELOCITY, el
+límite de velocidad y la predicción del punto de caída dejan de funcionar sin
+avisar (el panel muestra «no velocity - gate off»). Los ajustes de siembra no
+necesitan ningún otro cable: todo llega por este.
+</div>
+<p>El disparo del piloto (canal F del A3 → GPIO 35) <strong>no está
+cableado</strong>; la señal del Mega de la sección siguiente solo sirve para
+probar esa entrada en el banco.</p>
 
 <h3>4.3 Señal de prueba desde el Arduino Mega</h3>
 <p>El Mega trabaja a 5 V, por lo que <strong>requiere divisor de tensión</strong>:</p>
@@ -385,14 +409,25 @@ reales. Deténgase y verifique <code>SIM_MODE</code>.
       <td>Armar/desarmar, siembras manuales, parada de emergencia y registro de
           vuelo. <em>ARM</em> requiere dos toques. La <strong>PARADA DE
           EMERGENCIA</strong> es la barra roja inferior: un toque, siempre
-          disponible, sin confirmación. <em>worst loop</em> indica el ciclo más
-          lento del software; unos pocos ms es saludable.</td></tr>
+          disponible, sin confirmación. La tarjeta <strong>APPROACH</strong>
+          muestra FAR → APPROACHING → SLOW DOWN (demasiado rápido) → SETTLING
+          (contando la espera) → IN RADIUS → DROPPING, con distancia, velocidad
+          frente al límite y espera acumulada. La tarjeta <strong>DJI MISSION
+          (API)</strong> cuenta los mensajes de misión que el DJI podría enviar
+          en una misión de GS Pro; solo informa, nunca dispara.
+          <em>worst loop</em> indica el ciclo más lento del software; unos pocos
+          ms es saludable.</td></tr>
   <tr><td><strong>Waypoints</strong></td>
       <td>Planificación de la misión. <strong>ADD WAYPOINT HERE</strong> captura
           la posición actual con un solo toque; se rechaza si no hay señal GPS.
-          El radio define a qué distancia se activa la siembra:
+          El radio (uno por punto, editable en la lista) define a qué distancia
+          del punto previsto de caída se activa la siembra:
           <strong>use 10 m para pruebas</strong>. Los cambios solo se guardan al
-          pulsar <em>Save</em>.</td></tr>
+          pulsar <em>Save</em>. La tarjeta <strong>RELEASE SETTINGS</strong> fija
+          la velocidad máxima, la espera y el radio por defecto
+          (<em>Apply + Save</em> los graba; <em>Default radius → all
+          waypoints</em> copia el radio a todos los puntos y luego hay que pulsar
+          <em>Save</em>). Bloqueado mientras está armado.</td></tr>
   <tr><td><strong>Calibration</strong></td>
       <td>Ajuste de servos y del disparo por radiocontrol.
           <strong>No use los controles de servo</strong> sin indicación expresa.</td></tr>
@@ -450,6 +485,20 @@ los confirmara o descartara. Los cuatro están cerrados:</p>
       <code>LIMIT_SWITCHES_WIRED 0</code> en <code>Pins.h</code> hace que la
       última compuerta se temporice como las demás.</li>
 </ul>
+<h3>9.5 Novedades del 2026-10-15 — probadas en el PC, AÚN NO en la placa</h3>
+<ul>
+  <li><strong>Ajustes de siembra en el panel:</strong> el límite de 2.0 m/s ya no
+      está fijo en el código, hay un <strong>tiempo de espera</strong> y un
+      <strong>radio por defecto</strong> guardado con «aplicar a todos». Se
+      guardan en <code>mission.json</code> (bloque <code>release</code>). Se
+      probaron en el PC contra el código real de la lógica de siembra; <strong>no
+      se han cargado en la placa</strong>, que sigue con la versión del
+      2026-09-30. Los pasos 21–26 del plan los verifican.</li>
+  <li><strong>Disparo del piloto desactivado por defecto</strong>, porque su
+      cable no está instalado.</li>
+  <li>Guía de cableado corregida: GPIO 26 y GPIO 35 no se conectan; DJI
+      Assistant 2 debe mantener VELOCITY en el broadcast.</li>
+</ul>
 <div class="peligro">
 <strong>No conecte los servos salvo que una persona supervisora lo indique.</strong>
 </div>
@@ -475,7 +524,9 @@ los confirmara o descartara. Los cuatro están cerrados:</p>
           satélites: espere un minuto.</td></tr>
   <tr><td>No se ejecuta la siembra</td>
       <td>¿Está ARMADO? ¿Hay un punto guardado? ¿El radio es suficiente? ¿El punto
-          está realmente cerca?</td></tr>
+          está realmente cerca? Mire la tarjeta APPROACH: <em>SLOW DOWN</em> = va
+          más rápido que la velocidad máxima; <em>SETTLING</em> = está contando el
+          tiempo de espera.</td></tr>
   <tr><td>No aparecen siembras en el registro</td>
       <td>Active «Events only». La telemetría escribe una línea por segundo y las oculta.</td></tr>
   <tr><td>Todo responde con lentitud</td>
@@ -499,7 +550,13 @@ con un solo LED.</p>
 
 <h2 class="salto">11. Qué hacer a continuación</h2>
 <p>En este orden. No salte pasos.</p>
-<ol>
+<ol start="0">
+  <li><strong>Cargue la versión actual</strong> (SIM, sección 7) y ejecute los
+      pasos 21–26 de <code>SIM_MODE_VALIDATION_PLAN.md</code>: los ajustes de
+      siembra nunca se han ejecutado en la placa. Luego, en la pestaña
+      Calibration, compruebe que <em>RC trigger enabled</em> está
+      <strong>desmarcado</strong> y pulse Apply + Save (el archivo guardado en la
+      placa es anterior al nuevo valor por defecto).</li>
   <li><strong>Mida <code>T_EXIT_S</code></strong> — el tiempo que tarda la semilla
       en salir de la compuerta. Vale 0.0 y nunca se ha medido; puede suponer
       hasta 2.9 m de error. Trabajo de banco con un teléfono a 240 fps, sin dron:
@@ -514,7 +571,7 @@ con un solo LED.</p>
       pasos del navegador y todo el bloque de radiocontrol.</li>
 </ol>
 <div class="nota">
-<code>SIM_MODE_VALIDATION_PLAN.md</code> es el guion de pruebas: 20 pasos
+<code>SIM_MODE_VALIDATION_PLAN.md</code> es el guion de pruebas: 26 pasos
 numerados con un criterio de aprobación cada uno. <strong>En algunos pasos, que
 la siembra se ejecute significa FALLO</strong> — son los que verifican que algo
 <em>no</em> debe ocurrir. Lea el criterio, no lo suponga.

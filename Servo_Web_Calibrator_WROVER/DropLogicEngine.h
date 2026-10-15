@@ -21,14 +21,20 @@
 // did. This class only owns the automatic GPS-triggered sequence.
 class DropLogicEngine {
 public:
-    // ── Release gate: in radius AND slowed down ─────────────────────────
+    // ── Release gate: in radius AND slowed down AND settled ─────────────
     // Being inside the waypoint radius is not enough on its own: the seed
     // must also leave a slow aircraft, so the pilot flies in, slows, and the
-    // release happens once horizontal speed is at or below this. Only
-    // enforced when the position source has velocity health (OSDK); on the
-    // GNSS fallback there is no speed to test and the gate stays open, which
-    // is the pre-gate behaviour.
-    static constexpr float MAX_RELEASE_SPEED_MPS = 2.0f;
+    // release happens once horizontal speed is at or below
+    // release.max_speed_mps (mission.json, editable from the dashboard; it was
+    // a compile-time 2.0 until 2026-10-15). Only enforced when the position
+    // source has velocity health (OSDK); on the GNSS fallback there is no
+    // speed to test and the gate stays open, which is the pre-gate behaviour.
+    //
+    // release.dwell_s then asks for that condition to hold, ARMED and
+    // continuously, before the drop starts — so a hover drop waits for the
+    // aircraft to settle instead of firing on the first qualifying sample.
+    // The count runs only while armed: arming inside the radius waits the
+    // full dwell rather than firing at once on time spent disarmed.
 
     // Distance from the next waypoint at which the dashboard starts reporting
     // APPROACHING. Never smaller than a few radii, so a large radius still
@@ -42,7 +48,8 @@ public:
         DONE,          // mission complete / out of doors
         FAR,           // outside the approach zone
         APPROACHING,   // inside the approach zone, not yet in radius
-        SLOW_DOWN,     // in radius but faster than MAX_RELEASE_SPEED_MPS
+        SLOW_DOWN,     // in radius but faster than release.max_speed_mps
+        SETTLING,      // in radius, slow, armed — counting down release.dwell_s
         IN_RADIUS,     // in radius and slow enough — fires if armed
         DROPPING       // A->B sequence running
     };
@@ -54,6 +61,7 @@ public:
         float    speed_mps   = 0.0f;
         bool     speed_valid = false;   // false -> speed gate not enforced
         bool     predicted   = false;   // dist is from the impact predictor
+        float    dwell_s     = 0.0f;    // in-radius-and-slow time so far, armed
     };
     const ApproachInfo& approach() const { return _approach; }
     static const char* approachName(Approach a);
@@ -117,7 +125,7 @@ public:
     // waypoint list is edited: the index is a position into drops[], so
     // editing the list underneath it would leave the engine pointing at a
     // different waypoint than the operator thinks, or past the end.
-    void resetProgress() { _next_drop_idx = 0; }
+    void resetProgress() { _next_drop_idx = 0; _dwell_start_ms = 0; }
 
 private:
     enum class Phase { IDLE, WAITING_A, WAITING_B };
@@ -135,6 +143,18 @@ private:
     Position _pending_pos;         // position captured at trigger time, for logging
     bool     _manual_pair   = false; // in-flight sequence came from the RC trigger
     ApproachInfo _approach;          // dashboard view of the next waypoint
+
+    // millis() when the current in-radius-and-slow run began, armed; 0 = not
+    // running. Cleared on any exit from the window, on disarm, on firing, on
+    // abort and on resetProgress().
+    uint32_t _dwell_start_ms = 0;
+
+    // What the gate saw at the moment it fired, for the "release" log row.
+    // Written to the log when module A finishes rather than at trigger time:
+    // at trigger time the logger is not yet in its drop window, so the row
+    // would sync to flash inside module A's drive window and overshoot it.
+    ApproachInfo _release_snap;
+    float        _release_max_speed = 0.0f;
 
     // drop id to log for the in-flight sequence (0 = pilot/RC commanded)
     uint8_t _currentDropId() const;

@@ -83,10 +83,21 @@ Three possible sources, in order of preference:
 
 Two ways:
 
-1. **Automatically** — you save a list of waypoints (GPS coordinates). When
-   the launcher gets within a set radius of one, it drops.
+1. **Automatically** — you save a list of waypoints (GPS coordinates). Once
+   armed, it drops when **all three** hold:
+   - the point where the seed *would land* (it predicts the fall from the
+     drone's speed) is inside that waypoint's **radius** (5 m by default);
+   - the drone's horizontal speed is at or below the **max speed** (2.0 m/s
+     by default);
+   - both have been true for the **dwell** time (0 s by default — set 1–2 s
+     for a hover drop).
+
+   All three are set on the dashboard's Waypoints tab (**RELEASE SETTINGS**).
+   Speed and prediction need the DJI's velocity; on the backup GPS only
+   radius and dwell apply.
 2. **Pilot trigger** — the pilot flips a switch on the remote control and
-   the launcher drops. This is built but has never been tested end to end.
+   the launcher drops. Built but never tested end to end, **not wired**, and
+   switched off by default.
 
 ---
 
@@ -111,9 +122,9 @@ Two ways:
 | GPIO 22 | Status LED (blinks a pattern per state) |
 | GPIO 27 | Yellow "waiting" LED |
 | GPIO 14 | Drop announce LED |
-| GPIO 35 | RC pilot trigger input (input-only pin) |
-| GPIO 25 | DJI OSDK serial in |
-| GPIO 26 | DJI OSDK serial out (wired, never used) |
+| GPIO 35 | RC pilot trigger input — **not wired** to the drone today |
+| GPIO 25 | DJI OSDK serial in — the only wire from the drone |
+| GPIO 26 | Reserved for DJI OSDK serial out — **not connected** |
 | GPIO 4 / 5 | GPS module |
 
 ### ⛔ NEVER USE THESE PINS
@@ -153,6 +164,15 @@ A3 API RX / VCC   →  NOT CONNECTED
 Both sides are 3.3 V so no converter is needed. **This link is
 receive-only** — the launcher listens, it never sends commands to the
 aircraft. That is a deliberate design rule, not a limitation.
+
+In **DJI Assistant 2**, the broadcast on this port must keep **POSITION** and
+**VELOCITY** switched on. Without VELOCITY the speed limit and the landing
+prediction silently stop working (the dashboard shows "no velocity - gate
+off"). The release settings need no other wire — everything comes over this
+one.
+
+The RC pilot trigger (A3 F-channel → GPIO 35) is **not wired**; the Mega
+signal below is only for bench-testing that input.
 
 ### Arduino Mega test signal (only when testing the RC input)
 
@@ -310,6 +330,11 @@ that banner is missing, the firmware can drive real motors. Stop and check
 - **ARM** requires two taps (it asks you to confirm).
 - **EMERGENCY STOP** is the red bar fixed at the bottom. One tap, always
   available, never asks for confirmation.
+- **APPROACH** card: FAR → APPROACHING → SLOW DOWN (too fast) → SETTLING
+  (counting the dwell) → IN RADIUS → DROPPING, with distance, speed vs the
+  limit, and dwell so far.
+- **DJI MISSION (API)** card: counts mission messages the DJI may send while
+  flying a GS Pro mission. Display only — it never fires anything.
 - **worst loop** shows how long the software's slowest cycle took. Under a
   few ms is healthy. Hundreds of ms means something is stalling.
 
@@ -317,9 +342,13 @@ that banner is missing, the firmware can drive real motors. Stop and check
 
 - **ADD WAYPOINT HERE** captures wherever the launcher currently is. Stand
   at the spot, tap once. It refuses if there is no GPS fix.
-- Radius is how close you must get before it drops. **Use 10 m for
-  testing**, not 3 — you are testing logic, not fighting GPS accuracy.
+- Radius is how close the predicted landing point must be before it drops.
+  Each waypoint has its own (edit it in the list). **Use 10 m for testing**,
+  not 3 — you are testing logic, not fighting GPS accuracy.
 - Edits are in memory only until you press **Save**.
+- **RELEASE SETTINGS**: max speed, dwell and default radius. **Apply + Save**
+  writes them to the board; **Default radius → all waypoints** copies the
+  default onto every waypoint (then press **Save**). Blocked while armed.
 
 **Calibration** — servo tuning and RC trigger setup. **Do not use the servo
 controls** unless someone has told you to; they drive real motors in a
@@ -376,6 +405,17 @@ test run could prove or disprove them. All four are now closed:
   `Pins.h` makes the last door timed like the others, so it no longer
   overdrives 3x. Wire them before relying on the last door.
 
+### New 2026-10-15 — built and host-tested, NOT yet on the board
+
+- **Release settings on the dashboard.** The 2.0 m/s limit is no longer
+  fixed in the code; there is a **dwell** time; and a saved **default
+  radius** with "apply to all". Stored in `mission.json` (`release` block).
+  Tested on the PC against the real drop-logic code; **not flashed yet** —
+  the board still runs the 2026-09-30 build. Plan steps 21–26 check it.
+- **RC trigger off by default**, because its wire is not fitted.
+- Wiring guide corrected: GPIO 26 and GPIO 35 are not connected; DJI
+  Assistant 2 must keep VELOCITY in the broadcast.
+
 ### Before any real mission
 
 - **The saved mission is a bench fixture**, a 10-point test line, not a real
@@ -395,7 +435,7 @@ test run could prove or disprove them. All four are now closed:
 | Serial prints garbage | Baud rate wrong. Set 115200. |
 | Dashboard won't load | Are you on the `SmartLauncher` Wi-Fi? Address is `192.168.4.1`, no https. |
 | "no fix" outdoors | Check `[OSDK]` lines on serial. `frames=0` means the cable is wrong or the A3 is off. Frames but `health` under 3 means the drone hasn't locked onto satellites yet — wait a minute. |
-| Drop doesn't fire | Is it ARMED? Is a waypoint saved? Is the radius big enough? Is the waypoint actually near you? |
+| Drop doesn't fire | Is it ARMED? Is a waypoint saved? Is the radius big enough? Is the waypoint actually near you? Check the APPROACH card: **SLOW DOWN** = faster than the max speed; **SETTLING** = counting the dwell. |
 | No drops in the log | Tick "Events only". Telemetry writes one row per second and buries them. |
 | Everything feels laggy | Check "worst loop". If it's high, the log is probably full — clear it. |
 
@@ -420,6 +460,10 @@ apart on one LED.
 
 In this order. Do not skip ahead.
 
+0. **Flash the current build** (SIM, §7) and run `SIM_MODE_VALIDATION_PLAN.md`
+   steps 21–26 — the release settings have never run on the board. Then, on
+   the Calibration tab, check *RC trigger enabled* is **off** and press
+   Apply + Save (the board's saved file predates the new default).
 1. **Measure `T_EXIT_S`** — how long a seed takes to clear the door. It is
    0.0 and unmeasured, worth up to 2.9 m of error. Bench job with a 240 fps
    phone, no drone. Follow `docs/T_EXIT_MEASUREMENT.md`; record trials in
@@ -433,7 +477,7 @@ In this order. Do not skip ahead.
 5. **The rest of `SIM_MODE_VALIDATION_PLAN.md`** — browser steps and the whole
    RC-trigger block. Record results in its table.
 
-`SIM_MODE_VALIDATION_PLAN.md` is the test script. It has 20 numbered steps
+`SIM_MODE_VALIDATION_PLAN.md` is the test script. It has 26 numbered steps
 with a pass criterion for each. **Some steps are written so that "it fired"
 is a FAILURE** — those are the ones testing that something must *not*
 happen. Read the criterion, don't assume.

@@ -18,6 +18,24 @@ void DropLogicEngine::update() {
 
         uint8_t drop_id = _currentDropId();
         DropResult resA = _modA.lastResult();
+
+        // Why it fired where it did — the gate's view at the trigger. Logged
+        // here, not at the trigger: see _release_snap in the header. The
+        // logger is still in its drop window this tick, so the row is not
+        // sync'd until module B's window closes.
+        if (!_manual_pair) {
+            char ex[192];
+            snprintf(ex, sizeof(ex),
+                     "\"id\":%u,\"dist\":%.2f,\"r\":%.1f,\"spd\":%.2f,\"vel\":%s,"
+                     "\"pred\":%s,\"max\":%.1f,\"dwell\":%.1f",
+                     drop_id, _release_snap.dist_m, _release_snap.radius_m,
+                     _release_snap.speed_mps,
+                     _release_snap.speed_valid ? "true" : "false",
+                     _release_snap.predicted   ? "true" : "false",
+                     _release_max_speed, _release_snap.dwell_s);
+            _log.logEvent("release", ex);
+        }
+
         _recordDrop(drop_id, 0, _modA.doorsDropped(), _pending_pos, resA);
 
         if (resA == DropResult::FAULT) {
@@ -73,14 +91,19 @@ void DropLogicEngine::update() {
     // The approach is computed disarmed too, so the dashboard shows the
     // aircraft closing on the waypoint before the operator arms. Nothing
     // below the isArmed() check further down can move a servo.
-    if (missionComplete()) { _approach = ApproachInfo(); _approach.state = Approach::DONE; return; }
+    if (missionComplete()) {
+        _approach = ApproachInfo(); _approach.state = Approach::DONE;
+        _dwell_start_ms = 0;
+        return;
+    }
 
     _pos.update();
     Position cur = _pos.read();
-    if (!cur.valid) { _approach = ApproachInfo(); return; }
+    if (!cur.valid) { _approach = ApproachInfo(); _dwell_start_ms = 0; return; }
 
-    const MissionConfig& mc = _cfg.config();
-    const DropPoint&     dp = mc.drops[_next_drop_idx];
+    const MissionConfig& mc  = _cfg.config();
+    const DropPoint&     dp  = mc.drops[_next_drop_idx];
+    const ReleaseConfig& rel = mc.release;
 
     // ── Phase 4: aim at the IMPACT point, not the release point ─────────
     // A propagule keeps the aircraft's horizontal velocity while it falls, so
@@ -102,8 +125,28 @@ void DropLogicEngine::update() {
 
     const float speed    = cur.horizontalSpeed();
     const bool  in_rad   = (dist <= dp.radius_m);
-    const bool  too_fast = cur.vel_valid && speed > MAX_RELEASE_SPEED_MPS;
+    const bool  too_fast = cur.vel_valid && speed > rel.max_speed_mps;
     const float zone     = fmaxf(APPROACH_ZONE_M, 4.0f * dp.radius_m);
+    const bool  armed    = _sm.isArmed();
+    const uint32_t now_ms = millis();
+
+    // ── Dwell ───────────────────────────────────────────────────────────
+    // The window is in radius AND not too fast. The count runs only ARMED,
+    // and any exit from the window — or a disarm — starts it over.
+    const bool in_window = in_rad && !too_fast;
+    if (!in_window || !armed) {
+        _dwell_start_ms = 0;
+    } else if (_dwell_start_ms == 0) {
+        _dwell_start_ms = now_ms ? now_ms : 1;      // 0 means "not running"
+        if (rel.dwell_s > 0.0f)
+            Serial.printf("[DLE] WP%d in radius%s — settling %.1fs before release\n",
+                          dp.id,
+                          cur.vel_valid ? (" at " + String(speed, 1) + " m/s").c_str() : "",
+                          rel.dwell_s);
+    }
+    const uint32_t dwell_ms   = (uint32_t)(rel.dwell_s * 1000.0f + 0.5f);
+    const uint32_t dwelled_ms = _dwell_start_ms ? now_ms - _dwell_start_ms : 0;
+    const bool     settled    = _dwell_start_ms && dwelled_ms >= dwell_ms;
 
     _approach.wp_id       = dp.id;
     _approach.dist_m      = dist;
@@ -111,11 +154,13 @@ void DropLogicEngine::update() {
     _approach.speed_mps   = cur.vel_valid ? speed : 0.0f;
     _approach.speed_valid = cur.vel_valid;
     _approach.predicted   = predicted;
-    _approach.state = in_rad       ? (too_fast ? Approach::SLOW_DOWN : Approach::IN_RADIUS)
-                    : dist <= zone ? Approach::APPROACHING
-                    :                Approach::FAR;
+    _approach.dwell_s     = dwelled_ms / 1000.0f;
+    _approach.state = !in_rad      ? (dist <= zone ? Approach::APPROACHING : Approach::FAR)
+                    : too_fast     ? Approach::SLOW_DOWN
+                    : (armed && !settled) ? Approach::SETTLING
+                    :                Approach::IN_RADIUS;
 
-    if (!_sm.isArmed()) return;
+    if (!armed) return;
 
     // Rate-limited to 1Hz. This ran on EVERY loop iteration while armed —
     // ~30 characters at 115200 baud is ~2.6ms of blocking, thousands of
@@ -126,7 +171,6 @@ void DropLogicEngine::update() {
     // than a metre, so an approach is still visible in real time.
     static uint32_t last_dist_ms  = 0;
     static float    last_dist_m   = -1.0f;
-    uint32_t now_ms = millis();
     if (now_ms - last_dist_ms >= 1000 || fabsf(dist - last_dist_m) > 1.0f) {
         last_dist_ms = now_ms;
         last_dist_m  = dist;
@@ -145,15 +189,20 @@ void DropLogicEngine::update() {
         if (now_ms - last_slow_ms >= 1000) {
             last_slow_ms = now_ms;
             Serial.printf("[DLE] WP%d in radius, %.1f m/s > %.1f — holding for slow-down\n",
-                          dp.id, speed, MAX_RELEASE_SPEED_MPS);
+                          dp.id, speed, rel.max_speed_mps);
         }
         return;
     }
 
-    if (in_rad) {
-        Serial.printf("[DLE] >>> In radius for WP%d at %s — executing drop\n", dp.id,
+    if (in_rad && settled) {
+        Serial.printf("[DLE] >>> In radius for WP%d at %s after %.1fs — executing drop\n",
+                      dp.id,
                       cur.vel_valid ? (String(speed, 1) + " m/s").c_str()
-                                    : "unknown speed (no velocity, gate off)");
+                                    : "unknown speed (no velocity, gate off)",
+                      dwelled_ms / 1000.0f);
+        _release_snap      = _approach;      // logged when module A finishes
+        _release_max_speed = rel.max_speed_mps;
+        _dwell_start_ms    = 0;
         _approach.state = Approach::DROPPING;
         _pending_idx = _next_drop_idx;
         _pending_pos = cur;
@@ -191,6 +240,7 @@ const char* DropLogicEngine::approachName(Approach a) {
         case Approach::FAR:         return "FAR";
         case Approach::APPROACHING: return "APPROACHING";
         case Approach::SLOW_DOWN:   return "SLOW DOWN";
+        case Approach::SETTLING:    return "SETTLING";
         case Approach::IN_RADIUS:   return "IN RADIUS";
         case Approach::DROPPING:    return "DROPPING";
     }
@@ -242,8 +292,9 @@ void DropLogicEngine::abort() {
                   "waypoint %d still pending ***\n",
                   a ? 'A' : 'B', _next_drop_idx + 1);
 
-    _phase       = Phase::IDLE;
-    _manual_pair = false;
+    _phase          = Phase::IDLE;
+    _manual_pair    = false;
+    _dwell_start_ms = 0;
     // _next_drop_idx deliberately untouched — see abort() in the header.
 }
 

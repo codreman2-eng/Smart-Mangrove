@@ -34,6 +34,11 @@
 
 // ─── RC PWM input — pilot trigger from the M600's A3 Pro F-channel ────
 //
+// NOT WIRED TODAY. The F-channel wire was taken out of the wiring guides on
+// 2026-10-14 and the trigger ships disabled in mission.json. The notes below
+// apply if it is ever fitted (e.g. for GS Pro's "PWM to F-channel" waypoint
+// action — see reports/Estado de waypoints en el M600.md).
+//
 // GPIO 35 is INPUT-ONLY (34-39 are): it physically cannot be configured as
 // an output, so no firmware bug can ever back-drive the flight controller.
 // That is the reason for the choice, not convenience.
@@ -62,11 +67,13 @@
 //   A3 API RX / VCC: NOT CONNECTED — this link is receive-only by design
 //
 // Both sides are 3.3V; no level shifter. 921600 baud as set in DJI
-// Assistant 2. Trimming the broadcast there to POSITION+GPS+RC+STATUS cuts
-// the frame from 231 to ~60 bytes; the decoder computes field offsets from
-// the passFlag, so that change is safe.
+// Assistant 2. The broadcast MUST keep VELOCITY (bit 3) and POSITION (bit 5)
+// enabled: the impact predictor and the release speed gate read velocity, and
+// without it both switch off silently (the gate fails OPEN — the APPROACH card
+// shows "no velocity - gate off"). TIME/QUATERNION/ACCEL/ANG_RATE can be
+// trimmed; the decoder computes field offsets from the passFlag.
 #define PIN_OSDK_RX   25
-#define PIN_OSDK_TX   26   // wired for future use; never driven today
+#define PIN_OSDK_TX   26   // NOT connected to the A3; reserved, never driven
 #define OSDK_BAUD     921600
 
 // ─── Indicator LEDs ───────────────────────────────────────────────────

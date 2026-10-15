@@ -272,8 +272,8 @@ static const char HTML_WP[] =
 "<div class='sw'><b id='wpHereLL' style='color:#e5e7eb'>--</b></div>"
 "<div class='up' id='wpSrc'>--</div></div>"
 "<div class='ms-row' style='margin-top:10px'>"
-"<label>Radius</label><input type='number' id='wpR' value='3' min='0.5' max='100' step='0.5'>"
-"<label>m</label></div>"
+"<label>Radius</label><input type='number' id='wpR' value='5' min='0.5' max='100' step='0.5'>"
+"<label>m &nbsp;(starts at the saved default radius below)</label></div>"
 "<button class='b-o' style='width:100%;padding:14px;margin-top:8px;font-size:.9rem' "
 "onclick='wpHere()'>&#128205; ADD WAYPOINT HERE</button>"
 "</div>"
@@ -288,6 +288,25 @@ static const char HTML_WP[] =
 "<div style='font-size:.66rem;color:#6b7280;margin-top:8px;line-height:1.6'>"
 "Edits live in RAM until <b>Save</b> writes mission.json. Any edit rewinds "
 "mission progress to waypoint 1. Blocked while armed."
+"</div></div>"
+// Release gate settings. These decide WHEN an armed launcher fires, so they
+// sit next to the waypoints they apply to rather than on the Control tab.
+"<div class='sw-bar'><h2>RELEASE SETTINGS <span style='color:#374151'>&#183; when an armed launcher fires</span></h2>"
+"<div class='ref-row'>"
+"<div><label>Max speed (m/s)</label><input type='number' id='relSpd' value='2.0' min='0.1' max='15' step='0.1' oninput='relPreview()'></div>"
+"<div><label>Dwell (s)</label><input type='number' id='relDw' value='0' min='0' max='30' step='0.5'></div>"
+"<div><label>Default radius (m)</label><input type='number' id='relR' value='5' min='0.5' max='100' step='0.5'></div>"
+"</div>"
+"<div class='preview' id='relCarry'>--</div>"
+"<div class='btns' style='grid-template-columns:1fr 1fr'>"
+"<button class='b-o' onclick='relApply()'>&#128190; Apply + Save</button>"
+"<button class='b-t' style='margin:0' onclick='wpRadiusAll()'>Default radius &#8594; all waypoints</button></div>"
+"<div style='font-size:.66rem;color:#6b7280;margin-top:8px;line-height:1.6'>"
+"Fires when the <b>predicted impact point</b> is inside the waypoint's radius, horizontal speed is at or "
+"below <b>Max speed</b>, and both have held for <b>Dwell</b> seconds while armed (0 = at once; 1-2 s for a "
+"hover drop). Speed gate and prediction need DJI OSDK velocity &#8212; on the GNSS fallback only radius "
+"and dwell apply. <b>Apply + Save</b> writes the whole mission.json, unsaved waypoint edits included. "
+"<b>&#8594; all waypoints</b> is a waypoint edit: press <b>Save</b> above to keep it. Blocked while armed."
 "</div></div>"
 "</div>";
 
@@ -315,6 +334,7 @@ static const char HTML_MISSION[] =
 "<div style='font-size:1.9rem;font-weight:700;color:#f9fafb' id='apDist'>--</div>"
 "<div class='kv'>Next waypoint: <b id='apWp'>--</b></div>"
 "<div class='kv'>Speed / release max: <b id='apSpd'>--</b></div>"
+"<div class='kv'>Dwell / required: <b id='apDw'>--</b></div>"
 "<div class='kv'>Aim: <b id='apPred'>--</b></div>"
 "</div>"
 "<div class='row2'>"
@@ -350,6 +370,20 @@ static const char HTML_MISSION[] =
 "<div style='font-size:.66rem;color:#6b7280;margin-top:7px;line-height:1.6'>"
 "Supplements GPS &#8212; fires a balanced A&#8594;B pair without consuming a waypoint. "
 "Cannot arm: the dashboard must arm first.</div></div>"
+// The OSDK mission pushes counted by OsdkPositionSource. Whether the A3
+// sends them for a GS Pro mission is the open question in
+// reports/Estado de waypoints en el M600.md; this card is where a simulator
+// run answers it. Display only.
+"<div class='sw-bar'><h2>DJI MISSION (API) &nbsp;<span style='color:#374151'>OSDK 0x02/0x03 &#183; 0x02/0x04 &#183; listen-only</span></h2>"
+"<div class='sw-row'>"
+"<div class='sw'>status <b id='djMis' style='color:#e5e7eb'>0</b></div>"
+"<div class='sw'>events <b id='djEvt' style='color:#e5e7eb'>0</b></div>"
+"<div class='sw'>encrypted <b id='djEnc' style='color:#e5e7eb'>0</b></div>"
+"<div class='up' id='djLast'>none seen</div></div>"
+"<div style='font-size:.66rem;color:#6b7280;margin-top:7px;line-height:1.6'>"
+"Shows whether the A3 reports GS Pro waypoint progress over the API (logged as <b>osdk_mission</b>). "
+"<b>Not used to fire</b> &#8212; the release stays the radius + speed + dwell gate until a simulator run "
+"proves these messages arrive.</div></div>"
 "<div class='log'><h2>FLIGHT LOG <button class='b-danger' style='width:auto;padding:4px 10px;font-size:.65rem;float:right' onclick='clearLogTap()'>Clear</button></h2>"
 "<label style='font-size:.66rem;color:#6b7280;display:flex;align-items:center;gap:5px;margin-bottom:6px'>"
 "<input type='checkbox' id='logEv' checked onchange='refreshLog()'> Events only "
@@ -425,7 +459,7 @@ static const char HTML2[] =
 "<div><label>Timeout (ms)</label><input type='number' id='rcTimeout' value='500' min='100' max='5000' step='50'></div>"
 "</div>"
 "<label style='font-size:.65rem;color:#6b7280;display:flex;align-items:center;gap:5px;margin:6px 0'>"
-"<input type='checkbox' id='rcEn' checked> RC trigger enabled</label>"
+"<input type='checkbox' id='rcEn'> RC trigger enabled <span style='color:#374151'>(F-channel &#8594; GPIO 35 is not wired today &#8212; leave off)</span></label>"
 "<div class='btns'>"
 "<button class='b-t' style='margin:0' onclick='rcSweep()'>&#8635; Reset sweep</button>"
 "<button class='b-t' style='margin:0' onclick='rcSuggest()'>&#9998; Suggest from sweep</button>"
@@ -559,7 +593,7 @@ static const char HTML3[] =
 "el.parentElement.scrollTop=el.parentElement.scrollHeight;"
 "}catch(e){}}"
 // --- RC pilot trigger calibration ---
-"let rcSeen={min:0,max:0};"
+"let rcSeen={min:0,max:0},rcLoaded=false;"
 "function rcSweep(){doFetch('/rccal?reset=1').then(r=>{if(r&&r.ok)log('RC sweep reset - move the switch through all positions','#60a5fa');});}"
 "function rcSuggest(){"
 "const sp=rcSeen.max-rcSeen.min;"
@@ -593,6 +627,11 @@ static const char HTML3[] =
 "const bd=document.getElementById('rcBand'+sfx);"
 "if(bd){bd.textContent=j.rcBand;bd.className='badge '+cls;}"
 "const hz=document.getElementById('rcHz'+sfx);if(hz)hz.textContent=j.rcHz+' Hz';});"
+// The RC form starts from what the board holds, once per page load. It used
+// to start from hard-coded HTML defaults (enabled, 1300/1700), so Apply + Save
+// silently re-enabled a trigger the board had saved as off.
+"if(!rcLoaded&&j.rcSafe){rcLoaded=true;document.getElementById('rcEn').checked=!!j.rcEn;"
+"document.getElementById('rcSafe').value=j.rcSafe;document.getElementById('rcFire').value=j.rcFire;}"
 "rcSeen.min=j.rcMin;rcSeen.max=j.rcMax;"
 "const rg=document.getElementById('rcRange');"
 "if(rg)rg.textContent=j.rcMin?(j.rcMin+'-'+j.rcMax+'us'):'--';"
@@ -619,7 +658,10 @@ static const char HTML3[] =
 "if(j.wp.length>cap){W.style.display='block';"
 "W.innerHTML='&#9888; '+j.wp.length+' waypoints but only '+cap+' doors per module. '"
 "+'Drops past #'+cap+' cannot fire - they would log as successful with no motion.';}"
-"else W.style.display='none';}"
+"else W.style.display='none';"
+// Fill the release card from the board once per page load, so a refresh
+// does not overwrite values the operator is still typing.
+"if(j.rel&&!relLoaded){relFill(j.rel);relLoaded=true;}}"
 "async function wpCall(q){"
 "const r=await doFetch('/mission'+q);"
 "if(!r||!r.ok)return null;"
@@ -638,6 +680,31 @@ static const char HTML3[] =
 "async function wpSave(){"
 "const r=await doFetch('/mission?save=1');"
 "if(r&&r.ok){toast('Mission saved to mission.json',false);log('mission.json written','#4ade80');}}"
+// --- Release settings ---
+"let relLoaded=false;"
+"function relNum(id,lo,hi){const v=parseFloat(document.getElementById(id).value);"
+"return(isNaN(v)||v<lo||v>hi)?null:v;}"
+// Fall carry at the speed limit from the 8m mission height: what the
+// predictor corrects for with OSDK velocity, and the downrange miss without it.
+"function relPreview(){const v=relNum('relSpd',0.1,15);const el=document.getElementById('relCarry');"
+"if(v===null){el.textContent='Max speed must be 0.1-15 m/s';return;}"
+"const c=v*Math.sqrt(2*8/9.80665);"
+"el.innerHTML='At <b>'+v.toFixed(1)+' m/s</b> from 8 m a seed carries <b>'+c.toFixed(1)+' m</b> forward '"
+"+'&#8212; the predictor aims for it with OSDK velocity; on GNSS it lands that far past the waypoint.';}"
+"function relFill(r){document.getElementById('relSpd').value=r.spd;document.getElementById('relDw').value=r.dwell;"
+"document.getElementById('relR').value=r.defr;document.getElementById('wpR').value=r.defr;relPreview();}"
+"async function relApply(){"
+"const s=relNum('relSpd',0.1,15),d=relNum('relDw',0,30),R=relNum('relR',0.5,100);"
+"if(s===null||d===null||R===null){toast('Speed 0.1-15 m/s, dwell 0-30 s, radius 0.5-100 m',true);return;}"
+"const r=await doFetch('/release?spd='+s+'&dwell='+d+'&defr='+R+'&save=1');"
+"if(!r||!r.ok)return;"
+"try{const j=await r.json();relFill(j);"
+"toast('Release saved: <= '+j.spd+' m/s, dwell '+j.dwell+' s, radius '+j.defr+' m',false);"
+"log('Release saved: speed<='+j.spd+' m/s dwell='+j.dwell+' s default r='+j.defr+' m','#4ade80');}catch(e){}}"
+"async function wpRadiusAll(){"
+"const R=relNum('relR',0.5,100);if(R===null){toast('Radius must be 0.5-100 m',true);return;}"
+"const j=await wpCall('?radiusall=1&r='+R);"
+"if(j)toast('Radius '+R+' m on all '+j.wp.length+' waypoints - press Save to keep it',false);}"
 "const STATE_NAMES=['BOOT','IDLE','ARMED','DROPPING','FAULT'];"
 "const STATE_CLASS=['s-boot','s-idle','s-armed','s-dropping','s-fault'];"
 "async function poll(){"
@@ -659,7 +726,7 @@ static const char HTML3[] =
 "document.getElementById('dropIdx').textContent=j.dropIdx+'/'+j.dropTotal;"
 "if(j.apSt!==undefined){"
 "const AP_CLASS={'NO POSITION':'s-stop','MISSION DONE':'s-stop',FAR:'s-boot',APPROACHING:'s-idle',"
-"'SLOW DOWN':'s-fault','IN RADIUS':'s-armed',DROPPING:'s-dropping'};"
+"'SLOW DOWN':'s-fault',SETTLING:'s-timed','IN RADIUS':'s-armed',DROPPING:'s-dropping'};"
 "const ab=document.getElementById('apBadge');"
 "ab.textContent=j.apSt;ab.className='badge '+(AP_CLASS[j.apSt]||'s-stop');"
 "const live=!(j.apSt==='NO POSITION'||j.apSt==='MISSION DONE');"
@@ -667,7 +734,17 @@ static const char HTML3[] =
 "document.getElementById('apWp').textContent=live?('WP'+j.apWp):'--';"
 "document.getElementById('apSpd').textContent=!live?'--':j.apSpdOk?"
 "(j.apSpd.toFixed(1)+' / '+j.apMax.toFixed(1)+' m/s'):('no velocity - gate off');"
-"document.getElementById('apPred').textContent=!live?'--':j.apPred?'predicted impact':'aircraft position';}"
+"document.getElementById('apPred').textContent=!live?'--':j.apPred?'predicted impact':'aircraft position';"
+"document.getElementById('apDw').textContent=!(j.apDwSet>0)?'off (fires at once)':"
+"(live?j.apDw.toFixed(1):'0.0')+' / '+j.apDwSet.toFixed(1)+' s';}"
+"if(j.osdkMis!==undefined){"
+"document.getElementById('djMis').textContent=j.osdkMis;"
+"document.getElementById('djEvt').textContent=j.osdkEvt;"
+"document.getElementById('djEnc').textContent=j.osdkEnc;"
+"const dl=[];"
+"if(j.misAge>=0)dl.push('status wp '+j.misWp+' st '+j.misSt+' ('+j.misAge+'s ago)');"
+"if(j.evtAge>=0)dl.push('event wp '+j.evtWp+' st '+j.evtSt+' ('+j.evtAge+'s ago)');"
+"document.getElementById('djLast').textContent=dl.length?dl.join(' \\u00b7 '):'none seen';}"
 "rcPaint(j);"
 "wpFixOk=j.gpsValid;"
 "const fd=document.getElementById('wpFixDot');"
@@ -683,7 +760,7 @@ static const char HTML3[] =
 // radius. While armed, that latency lands directly on drop timing — so the
 // auto-refresh pauses and the Refresh button stays available.
 "setInterval(()=>{if(!window._armed)refreshLog();},5000);"
-"preview('A');preview('B');refreshLog();"
+"preview('A');preview('B');relPreview();refreshLog();"
 "log('Connected - Mission Dashboard ready');"
 "</script></body></html>";
 
@@ -926,19 +1003,65 @@ void handleRcCal() {
     server.send(200, "text/plain", "ok");
 }
 
+// ─── Release gate settings ─────────────────────────────────────────────
+static String releaseJson() {
+    const ReleaseConfig& r = cfg.config().release;
+    return "{\"spd\":"   + String(r.max_speed_mps, 1) +
+           ",\"dwell\":" + String(r.dwell_s, 1) +
+           ",\"defr\":"  + String(r.default_radius_m, 1) + "}";
+}
+
+// The one place a release-setting change is announced, so the HTTP route and
+// the serial command cannot drift apart. The flight log is the record of
+// what the gate was set to when a drop happened.
+static void logReleaseChange(const char* via) {
+    const ReleaseConfig& r = cfg.config().release;
+    char ex[112];
+    snprintf(ex, sizeof(ex), "\"via\":\"%s\",\"max\":%.1f,\"dwell\":%.1f,\"defr\":%.1f",
+             via, r.max_speed_mps, r.dwell_s, r.default_radius_m);
+    logger.logEvent("release_cfg", ex);
+}
+
+// Waypoints tab -> RELEASE SETTINGS.
+//   /release                                       current values as JSON
+//   /release?spd=2.0&dwell=1.5&defr=5[&save=1]     set (clamped), optionally persist
+// Any argument may be omitted and keeps its current value. Always answers
+// with what was actually stored, so the UI shows the clamped result.
+void handleRelease() {
+    const bool mutate = server.hasArg("spd") || server.hasArg("dwell") || server.hasArg("defr");
+    if (mutate) {
+        // What makes the launcher fire must not change under an armed engine —
+        // the same stale-click guard as calibration and waypoint edits.
+        if (calibrationBlocked()) {
+            server.send(409, "text/plain", "blocked: armed/dropping"); return;
+        }
+        const ReleaseConfig cur = cfg.config().release;
+        cfg.setRelease(server.hasArg("spd")   ? server.arg("spd").toFloat()   : cur.max_speed_mps,
+                       server.hasArg("dwell") ? server.arg("dwell").toFloat() : cur.dwell_s,
+                       server.hasArg("defr")  ? server.arg("defr").toFloat()  : cur.default_radius_m);
+        logReleaseChange("http");
+        if (server.hasArg("save") && !cfg.save()) {
+            server.send(500, "text/plain", "save failed"); return;
+        }
+    }
+    server.send(200, "application/json", releaseJson());
+}
+
 // ─── Waypoints tab ─────────────────────────────────────────────────────
 // One route, action selected by query parameter:
-//   /mission                       list waypoints as JSON
-//   /mission?add=here&r=3          add at the CURRENT position  <- field use
+//   /mission                       list waypoints as JSON (+ release settings)
+//   /mission?add=here[&r=5]        add at the CURRENT position  <- field use
 //   /mission?add=1&lat=&lon=&r=    add explicit coordinates
 //   /mission?del=<index>
 //   /mission?radius=<index>&r=<m>
+//   /mission?radiusall=1&r=<m>     same radius on every waypoint
 //   /mission?clear=1
 //   /mission?save=1                persist to mission.json
+// A missing r on add means release.default_radius_m.
 void handleMission() {
     bool mutate = server.hasArg("add") || server.hasArg("del") ||
                   server.hasArg("clear") || server.hasArg("radius") ||
-                  server.hasArg("save");
+                  server.hasArg("radiusall") || server.hasArg("save");
     // Editing the mission mid-flight is exactly the stale-click hazard the
     // calibration guard already exists for — the engine indexes into this
     // list while armed.
@@ -959,8 +1082,12 @@ void handleMission() {
         if (!cfg.setDropRadius(server.arg("radius").toInt(), r)) {
             server.send(400, "text/plain", "bad index"); return;
         }
+    } else if (server.hasArg("radiusall")) {
+        if (!server.hasArg("r")) { server.send(400, "text/plain", "need r"); return; }
+        cfg.setAllDropRadius(constrain(server.arg("r").toFloat(), 0.5f, 100.0f));
     } else if (server.hasArg("add")) {
-        float r   = server.hasArg("r")   ? constrain(server.arg("r").toFloat(), 0.5f, 100.0f) : 3.0f;
+        float r   = server.hasArg("r")   ? constrain(server.arg("r").toFloat(), 0.5f, 100.0f)
+                                         : cfg.config().release.default_radius_m;
         float alt = server.hasArg("alt") ? server.arg("alt").toFloat() : 8.0f;
         double lat, lon;
         if (server.arg("add") == "here") {
@@ -999,6 +1126,7 @@ void handleMission() {
     String j = "{\"max\":" + String(cfg.maxDrops());
     j += ",\"doorsA\":" + String(modA.doorCount());
     j += ",\"doorsB\":" + String(modB.doorCount());
+    j += ",\"rel\":" + releaseJson();
     j += ",\"wp\":[";
     for (uint8_t i = 0; i < mc.drop_count; i++) {
         if (i) j += ",";
@@ -1066,7 +1194,9 @@ void handleStatus() {
         j += ",\"apSpd\":"   + String(ap.speed_mps, 1);
         j += ",\"apSpdOk\":" + String(ap.speed_valid ? "true" : "false");
         j += ",\"apPred\":"  + String(ap.predicted ? "true" : "false");
-        j += ",\"apMax\":"   + String(DropLogicEngine::MAX_RELEASE_SPEED_MPS, 1);
+        j += ",\"apMax\":"   + String(mc.release.max_speed_mps, 1);
+        j += ",\"apDw\":"    + String(ap.dwell_s, 1);
+        j += ",\"apDwSet\":" + String(mc.release.dwell_s, 1);
     }
     // RC pilot trigger — live values feed the Calibration tab's RC card
     j += ",\"rcEn\":"   + String(rcIn.enabled() ? "true" : "false");
@@ -1088,6 +1218,16 @@ void handleStatus() {
     j += ",\"osdkMis\":" + String(osdkSource.missionStatusFrames());
     j += ",\"osdkEvt\":" + String(osdkSource.missionEventFrames());
     j += ",\"osdkEnc\":" + String(osdkSource.encryptedFrames());
+    {
+        // Last decoded mission push; age -1 = never seen
+        const uint32_t now = millis();
+        const OsdkPositionSource::MissionLast& ms = osdkSource.lastMissionStatus();
+        const OsdkPositionSource::MissionLast& me = osdkSource.lastMissionEvent();
+        j += ",\"misWp\":"  + String(ms.wp) + ",\"misSt\":" + String(ms.st);
+        j += ",\"misAge\":" + String(ms.ms ? (long)((now - ms.ms) / 1000) : -1L);
+        j += ",\"evtWp\":"  + String(me.wp) + ",\"evtSt\":" + String(me.st);
+        j += ",\"evtAge\":" + String(me.ms ? (long)((now - me.ms) / 1000) : -1L);
+    }
     j += ",\"posSrc\":\"" + String(realSource.onPrimary() ? "OSDK" : "GNSS") + "\"";
     j += ",\"loopMax\":" + String(loop_max_report / 1000);   // ms
 #if SIM_MODE
@@ -1116,11 +1256,13 @@ static void handleSerialLine(String s) {
     cmd.toLowerCase();
 
     if (cmd == "help" || cmd == "?") {
-        Serial.println(F("commands: status | clearlog | arm | disarm | stop | wp"
+        Serial.println(F("commands: status | clearlog | arm | disarm | stop | wp | rel"
                          " | simpos <lat> <lon> | simclear"));
 #if SIM_MODE
         Serial.println(F("  bench (SIM only): wpadd <lat> <lon> [r] [alt] | "
                          "wpradius <idx|all> <r> | wpclear | wpsave"));
+        Serial.println(F("  bench (SIM only): rel <max_mps> <dwell_s> [default_r] | "
+                         "simvel <vn> <ve>"));
         Serial.println(F("  bench (SIM only): balltest — impact-predictor self-test"));
 #endif
         return;
@@ -1141,11 +1283,12 @@ static void handleSerialLine(String s) {
                       engine ? engine->nextDropIndex() : 0, mc.drop_count);
         if (engine) {
             const DropLogicEngine::ApproachInfo& ap = engine->approach();
-            Serial.printf("approach=%s wp=%d dist=%.1f r=%.1f speed=%.1f%s max=%.1f aim=%s\n",
+            Serial.printf("approach=%s wp=%d dist=%.1f r=%.1f speed=%.1f%s max=%.1f "
+                          "dwell=%.1f/%.1f aim=%s\n",
                           DropLogicEngine::approachName(ap.state), ap.wp_id,
                           ap.dist_m, ap.radius_m, ap.speed_mps,
                           ap.speed_valid ? "" : "(no vel, gate off)",
-                          DropLogicEngine::MAX_RELEASE_SPEED_MPS,
+                          mc.release.max_speed_mps, ap.dwell_s, mc.release.dwell_s,
                           ap.predicted ? "impact" : "aircraft");
         }
         Serial.printf("log=%lu bytes%s  worstLoop=%lu ms\n",
@@ -1164,6 +1307,34 @@ static void handleSerialLine(String s) {
         for (uint8_t i = 0; i < mc.drop_count; i++)
             Serial.printf("  [%d] %.7f, %.7f r=%.1fm\n", mc.drops[i].id,
                           mc.drops[i].lat_deg, mc.drops[i].lon_deg, mc.drops[i].radius_m);
+        return;
+    }
+    // Release gate. Printing works in every build; setting is SIM-only, like
+    // the waypoint editors below — a flight build changes it from the
+    // dashboard. RAM only until `wpsave` (which writes the whole mission.json).
+    if (cmd == "rel") {
+        rest.trim();
+#if SIM_MODE
+        if (rest.length()) {
+            if (calibrationBlocked()) { Serial.println(F("blocked: armed/dropping")); return; }
+            float v[3];
+            uint8_t nv = 0;
+            String r = rest;
+            while (nv < 3 && r.length()) {
+                int sp2 = r.indexOf(' ');
+                v[nv++] = (sp2 < 0 ? r : r.substring(0, sp2)).toFloat();
+                if (sp2 < 0) break;
+                r = r.substring(sp2 + 1); r.trim();
+            }
+            if (nv < 2) { Serial.println(F("usage: rel <max_mps> <dwell_s> [default_r]")); return; }
+            cfg.setRelease(v[0], v[1], nv >= 3 ? v[2] : cfg.config().release.default_radius_m);
+            logReleaseChange("serial");
+            Serial.print(F("(RAM only - use wpsave)  "));
+        }
+#endif
+        const ReleaseConfig& r = cfg.config().release;
+        Serial.printf("release: speed<=%.1f m/s  dwell=%.1f s  default r=%.1f m\n",
+                      r.max_speed_mps, r.dwell_s, r.default_radius_m);
         return;
     }
 #if SIM_MODE
@@ -1295,10 +1466,11 @@ static void handleSerialLine(String s) {
             }
             double lat = tok[0].toDouble();
             double lon = tok[1].toDouble();
-            // Defaults chosen to be usable, not merely legal: 5m is the
-            // smallest radius that still survives a fallback to the 1Hz GNSS
-            // source at 5m/s (chord must exceed one sample step).
-            float  r   = (nt >= 3) ? tok[2].toFloat() : 5.0f;
+            // Default radius is release.default_radius_m (5m out of the box:
+            // the smallest radius that still survives a fallback to the 1Hz
+            // GNSS source at 5m/s — the chord must exceed one sample step).
+            float  r   = (nt >= 3) ? tok[2].toFloat()
+                                   : cfg.config().release.default_radius_m;
             float  alt = (nt >= 4) ? tok[3].toFloat() : 8.0f;
             if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
                 Serial.println(F("lat/lon out of range"));
@@ -1469,6 +1641,7 @@ void setup() {
     server.on("/clearlog", handleClearLog);
     server.on("/rccal",    handleRcCal);
     server.on("/mission",  handleMission);
+    server.on("/release",  handleRelease);
 #if SIM_MODE
     server.on("/simpos",   handleSimPos);
 #endif

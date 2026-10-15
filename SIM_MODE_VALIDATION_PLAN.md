@@ -331,6 +331,39 @@ the GPIO 2 and GPIO 9/10 bugs.
 20. **Signal loss mid-flight.** Unplug the signal wire while ARMED.
     *Pass: serial logs `SIGNAL LOST`; nothing fires. Loss must never trigger.*
 
+> **Since 2026-10-15 the RC trigger ships disabled** (the F-channel is not in
+> the wiring guides). For steps 13–20, tick *RC trigger enabled* on the
+> Calibration tab and Apply + Save first; untick and save again afterwards.
+
+---
+
+## 6c. Release gate settings (added 2026-10-15) — SIM build, serial only
+
+Max speed, dwell and default radius are now `mission.json` settings edited
+from the Waypoints tab. The logic was host-tested (real `DropLogicEngine.cpp`
+against a fake position source, 17/17) but has **not run on the board**.
+Drive it with the serial commands — timing-critical, so script it rather than
+hand-type it. Each firing step consumes a waypoint (and a door per module):
+`<lat> <lon>` below is always the waypoint `status` reports as `wp=`, taken
+from `wp`. Four drops are needed, so start with all doors at 0 (reboot).
+
+21. **Defaults survive an old mission.json.** Boot the new build on a board whose
+    mission.json predates it. *Pass: `[CFG]` summary prints
+    `Release : speed<=2.0 m/s dwell=0.0 s default r=5.0 m`; `rel` prints the same.*
+22. **Dwell 0 = old behaviour.** `arm`, `simpos <lat> <lon>`, `simvel 1 0`.
+    *Pass: fires at once, as step 11 did.* Then `stop`.
+23. **Dwell counts.** `rel 2.0 2.0`, re-arm, `simpos`, `simvel 0.5 0`.
+    *Pass: `status` shows `approach=SETTLING ... dwell=x/2.0`; `>>> ... after
+    2.0s — executing drop` about 2 s after `settling 2.0s before release`.*
+24. **Exit restarts it.** Same, but `simvel 3 0` for one second mid-count, then
+    `simvel 0.5 0`. *Pass: SLOW DOWN, then a fresh 2.0 s before firing.*
+25. **Speed limit is live.** `rel 0.5 0`, `simvel 1 0` → SLOW DOWN, holds;
+    `rel 1.5 0` is refused while armed (`blocked`) — disarm, set, re-arm →
+    fires. *Pass: both behaviours.*
+26. **Log row.** Events-only flight log after any drop above. *Pass: a
+    `release` row with dist, r, spd, max and dwell precedes the two `drop` rows.*
+    (Needs room in the log — it was FULL on 2026-09-30.)
+
 ---
 
 ## 7. Results table (fill in at the bench)
@@ -362,6 +395,12 @@ the GPIO 2 and GPIO 9/10 bugs.
 | 18 | RC re-fire | second pair fires | | |
 | 19 | RC cold start at FIRE | **must NOT fire** | | |
 | 20 | RC signal loss | **must NOT fire** | | |
+| 21 | Release defaults on old mission.json | 2.0 / 0.0 / 5.0 | | |
+| 22 | Dwell 0 | fires at once | | |
+| 23 | Dwell 2.0 s | SETTLING, fires at ~2.0 s | | |
+| 24 | Speed spike mid-dwell | count restarts | | |
+| 25 | Speed limit 0.5 → 1.5 | holds, then fires; blocked while armed | | |
+| 26 | `release` log row | precedes the `drop` rows | | |
 
 ---
 

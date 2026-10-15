@@ -76,16 +76,30 @@ bool ConfigManager::_parse(const char* path) {
     }
 
     // --- RC pilot trigger ---
-    // Absent block = defaults (enabled, 1300/1700). Note the defaults are
-    // only a starting point: they MUST be checked against the real A3
-    // channel with RC_Input_Calibration_Tool.ino before being trusted.
+    // Absent block = defaults (DISABLED, 1300/1700 — see RcTriggerConfig).
+    // The thresholds are only a starting point: they MUST be checked against
+    // the real A3 channel with RC_Input_Calibration_Tool.ino before being
+    // trusted. An existing mission.json keeps whatever "enabled" it saved.
     JsonObject rc = doc["rc_trigger"];
     if (!rc.isNull()) {
-        _cfg.rc_trigger.enabled           = rc["enabled"]           | true;
+        _cfg.rc_trigger.enabled           = rc["enabled"]           | false;
         _cfg.rc_trigger.safe_max_us       = rc["safe_max_us"]       | 1300;
         _cfg.rc_trigger.fire_min_us       = rc["fire_min_us"]       | 1700;
         _cfg.rc_trigger.frames_to_confirm = rc["frames_to_confirm"] | 5;
         _cfg.rc_trigger.signal_timeout_ms = rc["signal_timeout_ms"] | 500;
+    }
+
+    // --- Release gate ---
+    // Absent block = ReleaseConfig defaults, which are the 2026-09-30 flight
+    // build's behaviour (2.0 m/s, no dwell), so a board carrying an older
+    // mission.json keeps firing exactly as before. Routed through
+    // setRelease() so a hand-edited file cannot store an out-of-range value.
+    JsonObject rel = doc["release"];
+    if (!rel.isNull()) {
+        const ReleaseConfig def;
+        setRelease(rel["max_speed_mps"]    | def.max_speed_mps,
+                   rel["dwell_s"]          | def.dwell_s,
+                   rel["default_radius_m"] | def.default_radius_m);
     }
 
     // --- Drop points ---
@@ -138,6 +152,11 @@ bool ConfigManager::save() {
     rc["frames_to_confirm"] = _cfg.rc_trigger.frames_to_confirm;
     rc["signal_timeout_ms"] = _cfg.rc_trigger.signal_timeout_ms;
 
+    JsonObject rel = doc["release"].to<JsonObject>();
+    rel["max_speed_mps"]    = _cfg.release.max_speed_mps;
+    rel["dwell_s"]          = _cfg.release.dwell_s;
+    rel["default_radius_m"] = _cfg.release.default_radius_m;
+
     JsonArray drops = doc["drops"].to<JsonArray>();
     for (uint8_t i = 0; i < _cfg.drop_count; i++) {
         JsonObject d = drops.add<JsonObject>();
@@ -186,6 +205,19 @@ void ConfigManager::setRcTrigger(bool enabled, uint16_t safe_max_us, uint16_t fi
     _cfg.rc_trigger.signal_timeout_ms = signal_timeout_ms;
 }
 
+void ConfigManager::setRelease(float max_speed_mps, float dwell_s, float default_radius_m) {
+    // !(x >= lo) also catches NaN, which constrain() would pass straight through
+    auto clampf = [](float v, float lo, float hi) {
+        return !(v >= lo) ? lo : (v > hi ? hi : v);
+    };
+    _cfg.release.max_speed_mps    = clampf(max_speed_mps,
+                                           ReleaseConfig::SPEED_MIN,  ReleaseConfig::SPEED_MAX);
+    _cfg.release.dwell_s          = clampf(dwell_s,
+                                           ReleaseConfig::DWELL_MIN,  ReleaseConfig::DWELL_MAX);
+    _cfg.release.default_radius_m = clampf(default_radius_m,
+                                           ReleaseConfig::RADIUS_MIN, ReleaseConfig::RADIUS_MAX);
+}
+
 bool ConfigManager::addDrop(double lat_deg, double lon_deg, float alt_m, float radius_m) {
     if (_cfg.drop_count >= MAX_DROPS) return false;
     DropPoint& dp = _cfg.drops[_cfg.drop_count];
@@ -221,6 +253,10 @@ bool ConfigManager::setDropRadius(uint8_t idx, float radius_m) {
     return true;
 }
 
+void ConfigManager::setAllDropRadius(float radius_m) {
+    for (uint8_t i = 0; i < _cfg.drop_count; i++) _cfg.drops[i].radius_m = radius_m;
+}
+
 void ConfigManager::printSummary() const {
     if (!_cfg.loaded) { Serial.println("[CFG] No config loaded"); return; }
     Serial.println("=== MISSION CONFIG ===");
@@ -240,6 +276,9 @@ void ConfigManager::printSummary() const {
                   _cfg.rc_trigger.enabled ? "enabled" : "DISABLED",
                   _cfg.rc_trigger.safe_max_us, _cfg.rc_trigger.fire_min_us,
                   _cfg.rc_trigger.frames_to_confirm, _cfg.rc_trigger.signal_timeout_ms);
+    Serial.printf("  Release     : speed<=%.1f m/s  dwell=%.1f s  default r=%.1f m\n",
+                  _cfg.release.max_speed_mps, _cfg.release.dwell_s,
+                  _cfg.release.default_radius_m);
     Serial.printf("  Drop points : %d\n", _cfg.drop_count);
     for (uint8_t i = 0; i < _cfg.drop_count; i++) {
         const DropPoint& dp = _cfg.drops[i];

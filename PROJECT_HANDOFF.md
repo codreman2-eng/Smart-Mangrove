@@ -1672,6 +1672,100 @@ is still carrying the flight build until someone reflashes it.
 
 ---
 
+## PHASE 4c (2026-10-15): CONFIGURABLE RELEASE GATE, WIRING AUDIT
+
+**Status: BUILT, both builds compile clean, HOST-TESTED against the real
+`DropLogicEngine.cpp`. NOT FLASHED — the ESP32 was not available. The bench
+board still carries `22d753a` (2026-09-30 flight build) and does not have
+`932c913` (OSDK mission logging) either.** Next action: flash SIM, run
+`SIM_MODE_VALIDATION_PLAN.md` steps 21–26.
+
+The user asked for the release to be tunable from the dashboard: how close
+(radius), how slow (the 2 m/s), and how long the aircraft must have been there
+before releasing ("periodo o tiempo pasado para empezar a lanzar").
+
+### What was built
+
+- **`ReleaseConfig` in `mission.json`** (`"release"` block): `max_speed_mps`
+  (2.0, range 0.1–15), `dwell_s` (0.0, range 0–30), `default_radius_m` (5.0,
+  range 0.5–100). Absent block = these defaults = the 2026-09-30 behaviour, so
+  the board's existing mission.json keeps firing exactly as before.
+  `ConfigManager::setRelease()` clamps, NaN included.
+- **`MAX_RELEASE_SPEED_MPS` constexpr is gone** — the engine reads
+  `release.max_speed_mps`.
+- **Dwell.** The window is *in radius AND not too fast*. It counts only while
+  ARMED; any exit, a disarm, an abort or firing restarts it. Arming inside the
+  radius therefore waits the full dwell instead of firing on time spent
+  disarmed. New approach state **SETTLING** (counting). `dwell_s = 0` fires on
+  the first qualifying sample — byte-for-byte the old behaviour. On the GNSS
+  fallback (no velocity) the speed gate stays open but dwell still applies.
+- **`release` log row** (dist, r, spd, vel, pred, max, dwell) written when
+  module A finishes — NOT at the trigger, because at the trigger the logger is
+  not yet in its drop window and the row would `lfs_file_sync()` inside A's
+  drive window (the Phase 3e overshoot class). Host test confirms the row lands
+  inside the window. Settings changes log `release_cfg` (via http/serial).
+- **Dashboard.** Waypoints tab: RELEASE SETTINGS card (max speed, dwell,
+  default radius, live fall-carry preview at 8 m, Apply + Save, "Default radius
+  → all waypoints"); ADD WAYPOINT radius starts at the saved default (was a
+  hard-coded 3). Control tab: APPROACH card gains "Dwell / required" and the
+  SETTLING badge; new **DJI MISSION (API)** card shows the 0x02/0x03 / 0x02/0x04
+  counters and last wp/status from `932c913` — display only, never fires.
+- **HTTP:** `/release[?spd=&dwell=&defr=&save=1]`, `/mission?radiusall=1&r=`,
+  `/mission` JSON carries `rel`, `/status` carries `apDw`, `apDwSet`, `apMax`
+  (now from config), `misWp/misSt/misAge`, `evtWp/evtSt/evtAge`.
+- **Serial:** `rel` prints (all builds); `rel <max> <dwell> [r]` sets (SIM
+  only, blocked while armed, RAM until `wpsave`); `status` prints dwell; `wpadd`
+  defaults to `release.default_radius_m`.
+
+### "Another method with the API?" — still unproven, deliberately not wired in
+
+The user asked whether waypoint detection could come from the DJI API instead
+of the geometric/predictive gate. The only candidate is the A3's unsolicited
+0x02/0x03 / 0x02/0x04 pushes (`reports/Estado de waypoints en el M600.md`).
+`932c913` logs them; 4c shows them on the dashboard. **They are not used to
+fire**: whether the A3 sends them for a GS Pro mission to a never-activated
+device is unknown, and the GS Pro waypoint index does not map onto
+`mission.json` indices (GS Pro splits >99-point missions). Settle it with the
+Assistant 2 simulator run first; only then consider it as a *confirming*
+condition on top of the gate, not a replacement.
+
+### Wiring audit — what changed and why
+
+- **F-channel → GPIO 35 removed from `SMART_LAUNCHER_COMPLETE_GUIDE.md`**
+  (§4.1, §4.5, §4.7). The user had asked for this on 2026-10-14 and the report
+  says it was done, but git shows it never was — the guide still carried the
+  wire. Now it says NOT WIRED, with the conditions for bringing it back.
+- **RC trigger now ships DISABLED** (`RcTriggerConfig`, parse fallback,
+  `MissionDefault.h`). An unwired input-only pin has no pull resistor and
+  floats beside 50 Hz servo PWM; Module B's open/close pulses (1300/1700) sit
+  exactly on the SAFE/FIRE thresholds. The dashboard's RC form now loads
+  enabled/safe/fire from the board — it used to start from hard-coded HTML
+  (`checked`, 1300/1700), so Apply + Save silently re-enabled a saved-off
+  trigger. **The bench board's mission.json still says enabled: untick and
+  save after flashing.**
+- **GPIO 26 is "not connected"** everywhere. §4.7 used to draw a wire to A3 API
+  RX while §4.5 said RX NOT CONNECTED.
+- **VELOCITY must stay in the A3 broadcast.** `Pins.h`, `OsdkPositionSource.cpp`
+  and guide §4.5 all recommended trimming to POSITION+GPS+RC+STATUS — written
+  before Phase 4a. Doing that removes bit 3, so the predictor and the speed gate
+  switch off and the gate fails OPEN. Corrected in all three.
+- The release settings need **no new wiring**: everything arrives on A3 API TX
+  → GPIO 25 (new guide §4.5a table).
+
+### Verification actually done
+
+| Check | Result |
+|---|---|
+| `arduino-cli` SIM build | clean, **1,104,784 B (84%)**, RAM 50,424 B (15%) |
+| `arduino-cli` flight build (`SIM_MODE 0`, scratch copy) | clean apart from the intentional `#warning`, **1,105,979 B (84%)** |
+| Host C++ test: real `DropLogicEngine.cpp` + `ActuatorModule.cpp` + `StateMachine.cpp` + the real `setRelease`/`addDrop` (extracted), fake Arduino/Logger/position (zig c++) | **17/17**: defaults fire same tick; dwell 2.0 fires at 2000 ms; speed spike restarts the count (2020 ms after); disarmed time not counted; limit is live; GNSS dwell 1020 ms; e-stop while settling; clamps incl. NaN; release row inside drop window |
+| Dashboard JS extracted from the `.ino`, run against a stub DOM and fake board (Electron's node) | syntax OK, every `getElementById` target exists, **15/15** functional checks |
+| On the ESP32 | **nothing** — not available |
+
+The host harness lives only in the session scratchpad; it is not in the repo.
+
+---
+
 ## FLIGHT CONTROLLER (Cube Orange \u2014 separate from launcher)
 
 - User has Cube Orange Standard Set. Successfully flashed ArduCopter V4.6.3, CubeOrangePlus.
@@ -1837,7 +1931,14 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
 
 ## CURRENT EXACT STATE / WHERE WE ARE
 
-*(Last reviewed 2026-10-14, after PHASE 4b.)*
+*(Last reviewed 2026-10-15, after PHASE 4c.)*
+
+- **The board is two firmware revisions behind the repo.** It runs `22d753a`
+  (2026-09-30 flight build, `SIM_MODE 0`). Neither `932c913` (OSDK mission
+  logging) nor PHASE 4c (configurable release gate) has ever been flashed.
+  After flashing: plan steps 21–26, then untick *RC trigger enabled* and save.
+- Release settings (max speed 2.0, dwell 0, default radius 5) live in
+  `mission.json` and on the Waypoints tab; nothing about them is compile-time.
 
 - Board settings correct: ESP32 Wrover Module, 8MB flash, QIO, 80MHz,
   Default 4MB with spiffs, upload 921600. **The COM port moves between
@@ -1888,6 +1989,8 @@ Measured 2026-08-25, after the Phase 3e latency work:
 |---|---|---|
 | Dashboard, SIM_MODE 1 | 1,102,428 (84%) | 50,064 (15%) |
 | Dashboard, SIM_MODE 0 | 1,097,427 (83%) | 50,084 (15%) |
+| PHASE 4c (2026-10-15), SIM_MODE 1 | 1,104,784 (84%) | 50,424 (15%) |
+| PHASE 4c (2026-10-15), SIM_MODE 0 | 1,105,979 (84%) | 50,532 (15%) |
 
 SIM_MODE 1 measured 2026-09-01 after PHASE 4a. The ballistics work added
 +8,556 bytes, a good part of it the SIM-only `balltest` vectors, taking flash
@@ -1920,8 +2023,13 @@ picks up the same esp32 core 3.3.8 the IDE uses. Build:
 (e) confirmed-and-fixed on hardware, (c)'s symptoms proven unreachable in
 PHASE 3g.)*
 
-**Three things are now in front, in this order:**
+**Three things are now in front, in this order** — after step 0:
 
+0. **Flash the SIM build and run plan steps 21–26** (PHASE 4c), then
+   untick *RC trigger enabled* on the Calibration tab and Apply + Save. The
+   release-gate changes are host-tested only. The GS Pro / Assistant 2
+   simulator run from `reports/Estado de waypoints en el M600.md` can follow
+   on the same flash — watch the dashboard's DJI MISSION card.
 1. **Finish the ballistics work** — the predictor is BUILT and self-tested
    (PHASE 4a) but **has never seen real aircraft data**, because SIM has no
    velocity and it correctly refuses to predict without it. Three things close
@@ -2029,6 +2137,10 @@ servo-runaway safety incident.
 - Phase 4a Impact predictor (fall carry) - BUILT and self-tested on target,
            agreeing with an independent Python implementation. NEVER run on
            real aircraft data; t_exit unmeasured; DJI vz sign unverified.
+- Phase 4b Slow-down gate (2.0 m/s) + APPROACH card - flashed 2026-09-30
+- Phase 4c Release gate configurable from the dashboard (max speed, dwell,
+           default radius), DJI MISSION card, wiring audit (F-channel out,
+           GPIO 26 unconnected, VELOCITY required). Host-tested, NOT flashed
 - Phase 4  MAVLink position (Cube Orange TELEM2) - pending
 - Phase 5  Python config tool (import QGC/UgCS missions -> mission.json) - pending
 - Phase 6  Testing (bench -> static drops -> low altitude -> full mission) - pending

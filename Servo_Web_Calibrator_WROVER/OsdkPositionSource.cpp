@@ -27,9 +27,10 @@ static uint32_t osdkCrc32(const uint8_t* d, uint16_t n, uint32_t crc = 0x00003AA
 //
 // The offset MUST be computed from the passFlag rather than hardcoded to 72.
 // Fields are packed in bit order, so turning any of TIME/QUATERNION/ACCEL/
-// VELOCITY/ANG_RATE off in DJI Assistant 2 — which is the recommended way to
-// cut this link from 231 bytes to ~60 — slides POSITION earlier. A hardcoded
-// 72 would silently decode garbage the moment that config changed.
+// ANG_RATE off in DJI Assistant 2 slides POSITION earlier. A hardcoded 72
+// would silently decode garbage the moment that config changed.
+// VELOCITY must stay ON since Phase 4: the predictor and the release speed
+// gate need it, and without it both switch off (the gate fails open).
 static const uint8_t FIELD_SZ[6] = {
     15,   // bit 0  TIME
     16,   // bit 1  QUATERNION  (4 x float32)
@@ -258,6 +259,10 @@ void OsdkPositionSource::_onOtherFrame(const uint8_t* p, uint16_t n, uint8_t enc
         _mis_status++;
         uint8_t cur[6] = {0};
         memcpy(cur, p + 2, min<uint16_t>(6, n - 2));
+        _last_mis_status.a  = cur[0];
+        _last_mis_status.wp = cur[1];
+        _last_mis_status.st = cur[2];
+        _last_mis_status.ms = millis();
         if (_have_status && memcmp(cur, _last_status, sizeof(cur)) == 0) return;
         memcpy(_last_status, cur, sizeof(cur));
         _have_status = true;
@@ -268,6 +273,10 @@ void OsdkPositionSource::_onOtherFrame(const uint8_t* p, uint16_t n, uint8_t enc
     }
     if (set == 0x02 && id == 0x04) {                 // Waypoint Event
         _mis_event++;
+        _last_mis_event.a  = n > 2 ? p[2] : 0;
+        _last_mis_event.wp = n > 3 ? p[3] : 0;
+        _last_mis_event.st = n > 4 ? p[4] : 0;
+        _last_mis_event.ms = millis();
         Serial.printf("[OSDK] MISSION event inc=%u wp=%u st=%u (%u bytes)\n",
                       n > 2 ? p[2] : 0, n > 3 ? p[3] : 0, n > 4 ? p[4] : 0, n);
         _queue(OsdkMissionMsg::EVENT, p, n, enc);

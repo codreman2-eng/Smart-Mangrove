@@ -95,6 +95,16 @@ public:
     // Pops the oldest queued message; false when the queue is empty.
     bool     popMission(OsdkMissionMsg& out);
 
+    // Latest decoded field values, for the dashboard's DJI MISSION card. Only
+    // meaningful once the matching counter above is non-zero. Display only —
+    // like everything mission-related here, nothing reaches drop logic.
+    struct MissionLast {
+        uint8_t  a = 0, wp = 0, st = 0;   // STATUS: type/wp/status; EVENT: incident/wp/status
+        uint32_t ms = 0;                  // millis() of the last frame, 0 = never
+    };
+    const MissionLast& lastMissionStatus() const { return _last_mis_status; }
+    const MissionLast& lastMissionEvent()  const { return _last_mis_event; }
+
 private:
     HardwareSerial* _serial;
     uint8_t  _uart_num;
@@ -121,6 +131,7 @@ private:
     uint32_t _mis_status = 0, _mis_event = 0, _enc_frames = 0;
     uint8_t  _last_status[6] = {0};
     bool     _have_status = false;
+    MissionLast _last_mis_status, _last_mis_event;
 
     // Small ring; on overflow the oldest is overwritten. 8 is plenty: the
     // loop drains it every pass, and events arrive at most a few per waypoint.

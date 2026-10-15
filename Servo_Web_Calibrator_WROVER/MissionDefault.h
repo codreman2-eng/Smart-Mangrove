@@ -18,7 +18,11 @@
 // The rc_trigger band values (1300/1700) are likewise nominal RC-PWM
 // thresholds, NOT measured against the real A3 F-channel. Run
 // RC_Input_Calibration_Tool.ino and write in what that reports before the
-// pilot trigger is trusted to fire anything.
+// pilot trigger is trusted to fire anything. It ships DISABLED: the
+// F-channel -> GPIO 35 wire is not in the wiring guides (see RcTriggerConfig).
+//
+// The release block is the 2026-09-30 behaviour (2.0 m/s gate, no dwell);
+// it is edited from the dashboard's RELEASE SETTINGS card.
 const char MISSION_DEFAULT_JSON[] PROGMEM = R"json({
   "mission_name": "mangrove_plot_A",
   "min_gps_fix_duration_s": 10,
@@ -42,11 +46,16 @@ const char MISSION_DEFAULT_JSON[] PROGMEM = R"json({
     }
   },
   "rc_trigger": {
-    "enabled": true,
+    "enabled": false,
     "safe_max_us": 1300,
     "fire_min_us": 1700,
     "frames_to_confirm": 5,
     "signal_timeout_ms": 500
+  },
+  "release": {
+    "max_speed_mps": 2.0,
+    "dwell_s": 0.0,
+    "default_radius_m": 5.0
   },
   "drops": [
     { "id": 1, "lat_deg": 9.345678, "lon_deg": -79.876543, "alt_m": 8.0, "radius_m": 3.0 },
