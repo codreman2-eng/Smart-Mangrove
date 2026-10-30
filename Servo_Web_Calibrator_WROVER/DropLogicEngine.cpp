@@ -286,6 +286,14 @@ const char* DropLogicEngine::approachName(Approach a) {
     return "?";
 }
 
+void DropLogicEngine::resetDoors() {
+    _modA.reset();
+    _modB.reset();
+    resetProgress();
+    _hover.drops    = 0;          // _updateHover carries this field across ticks
+    _have_last_drop = false;
+}
+
 const char* DropLogicEngine::hoverName(Hover h) {
     switch (h) {
         case Hover::OFF:       return "OFF";

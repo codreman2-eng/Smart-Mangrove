@@ -171,6 +171,15 @@ public:
     // different waypoint than the operator thinks, or past the end.
     void resetProgress() { _next_drop_idx = 0; _dwell_start_ms = 0; _hold_start_ms = 0; }
 
+    // Rack reloaded: both modules back to door 0, mission progress and the
+    // hover drop count/last-drop point cleared, so the next sortie can arm.
+    // Until 2026-10-30 only a reboot did this — after 5 drops missionComplete()
+    // disarmed every ARM within one loop. Deliberately leaves the takeoff
+    // point and flight clock alone: pressed while airborne, re-learning home
+    // in the air would void the min-distance-from-takeoff guard. Caller must
+    // ensure nothing is armed or dropping.
+    void resetDoors();
+
 private:
     enum class Phase { IDLE, WAITING_A, WAITING_B };
 

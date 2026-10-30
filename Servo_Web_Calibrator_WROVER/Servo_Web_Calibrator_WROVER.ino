@@ -400,7 +400,12 @@ static const char HTML_MISSION[] =
 "<div class='btns' style='margin-top:10px'>"
 "<button class='b-o' id='dropABtn' onclick='dropTap(\"A\")'>DROP A</button>"
 "<button class='b-o' id='dropBBtn' onclick='dropTap(\"B\")'>DROP B</button>"
-"</div></div></div>"
+"</div>"
+"<div id='doorWarn' style='display:none;font-size:.68rem;color:#fbbf24;margin-top:8px;line-height:1.5'></div>"
+"<button class='b-t' id='resetDoorsBtn' style='width:100%;margin-top:8px' onclick='resetDoorsTap()'>&#8635; RESET DOOR COUNT</button>"
+"<div style='font-size:.62rem;color:#6b7280;margin-top:4px;line-height:1.5'>Reload the rack to its start position first. "
+"Disarm to use. Moves nothing.</div>"
+"</div></div>"
 "<div class='sw-bar'><h2>LIMIT SWITCHES</h2><div class='sw-row'>"
 "<div class='sw'><div id='dotA' class='dot'></div>Module A (GPIO 32)</div>"
 "<div class='sw'><div id='dotB' class='dot'></div>Module B (GPIO 33)</div>"
@@ -623,6 +628,14 @@ static const char HTML3[] =
 "setTimeout(()=>{if(dropConfirming[mod]){dropConfirming[mod]=false;b.textContent='DROP '+mod;b.className='b-o';}},5000);return;}"
 "dropConfirming[mod]=false;b.textContent='DROP '+mod;b.className='b-o';"
 "doFetch('/drop'+mod.toLowerCase()+'?confirm=1');}"
+"let resetConfirming=false;"
+"function resetDoorsTap(){"
+"const b=document.getElementById('resetDoorsBtn');"
+"if(!resetConfirming){resetConfirming=true;b.textContent='RACK RELOADED? TAP AGAIN';b.className='b-confirm';"
+"setTimeout(()=>{if(resetConfirming){resetConfirming=false;b.innerHTML='&#8635; RESET DOOR COUNT';b.className='b-t';}},5000);return;}"
+"resetConfirming=false;b.innerHTML='&#8635; RESET DOOR COUNT';b.className='b-t';"
+"doFetch('/resetdoors?confirm=1').then(r=>{if(r&&r.ok){toast('Door count reset - A 0/'+(window._dcA||5)+', ready to arm',false);"
+"log('Door count reset (rack reloaded)','#4ade80');}});}"
 "function clearLogTap(){"
 "if(!clearConfirming){clearConfirming=true;log('Tap Clear again within 5s to confirm','#f87171');"
 "setTimeout(()=>{clearConfirming=false;},5000);return;}"
@@ -784,6 +797,10 @@ static const char HTML3[] =
 "document.getElementById('satsVal').textContent=j.gpsValid?(j.sats+' sats / hdop '+j.hdop.toFixed(1)):'--';"
 "document.getElementById('doorsA').textContent=j.doorsA+'/'+j.doorCountA;"
 "document.getElementById('doorsB').textContent=j.doorsB+'/'+j.doorCountB;"
+"window._dcA=j.doorCountA;"
+"{const w=document.getElementById('doorWarn');const ea=j.doorsA>=j.doorCountA,eb=j.doorsB>=j.doorCountB;"
+"if(ea||eb){w.style.display='block';w.innerHTML='&#9888; Module '+(ea&&eb?'A and B':ea?'A':'B')+' empty'"
+"+(ea?' - ARM will not hold':'')+'. Reload the rack, then RESET DOOR COUNT.';}else w.style.display='none';}"
 "document.getElementById('dropIdx').textContent=j.dropIdx+'/'+j.dropTotal;"
 "if(j.apSt!==undefined){"
 "const AP_CLASS={'NO POSITION':'s-stop','MISSION DONE':'s-stop',FAR:'s-boot',APPROACHING:'s-idle',"
@@ -993,6 +1010,30 @@ void handleDropB() {
     bool started = modB.startDrop();
     if (started) { sm.setDropping(true); manualDropActive = true; }
     server.send(started ? 200 : 409, "text/plain", started ? "ok" : "cannot start");
+}
+
+// Rack reloaded -> door counters back to 0 (Control tab RESET DOOR COUNT).
+// Without it an emptied launcher stays "mission complete" and disarms every
+// ARM until a reboot. Moves nothing; refused while armed or dropping.
+static bool resetDoorCount(const char* via) {
+    if (calibrationBlocked() || !engine || engine->isBusy() ||
+        modA.isDropping() || modB.isDropping()) return false;
+    char ex[80];
+    snprintf(ex, sizeof(ex), "\"via\":\"%s\",\"a_was\":%u,\"b_was\":%u",
+             via, modA.doorsDropped(), modB.doorsDropped());
+    engine->resetDoors();
+    logger.logEvent("doors_reset", ex);
+    return true;
+}
+
+void handleResetDoors() {
+    if (!server.hasArg("confirm") || server.arg("confirm") != "1") {
+        server.send(400, "text/plain", "confirm required"); return;
+    }
+    if (!resetDoorCount("http")) {
+        server.send(409, "text/plain", "blocked: disarm first"); return;
+    }
+    server.send(200, "text/plain", "ok");
 }
 
 #if SIM_MODE
@@ -1458,7 +1499,7 @@ static void handleSerialLine(String s) {
     cmd.toLowerCase();
 
     if (cmd == "help" || cmd == "?") {
-        Serial.println(F("commands: status | clearlog | arm | disarm | stop | wp | rel | hover"
+        Serial.println(F("commands: status | clearlog | resetdoors | arm | disarm | stop | wp | rel | hover"
                          " | simpos <lat> <lon> | simclear"));
 #if SIM_MODE
         Serial.println(F("  bench (SIM only): wpadd <lat> <lon> [r] [alt] | "
@@ -1502,6 +1543,11 @@ static void handleSerialLine(String s) {
         return;
     }
     if (cmd == "clearlog") { logger.clearLog(); return; }
+    if (cmd == "resetdoors") {
+        Serial.println(resetDoorCount("serial") ? F("doors reset: A=0 B=0")
+                                                : F("blocked: disarm first"));
+        return;
+    }
     if (cmd == "arm")      { sm.requestArm();    return; }
     if (cmd == "disarm")   { sm.requestDisarm(); return; }
     if (cmd == "stop")     { emergencyStopAll(); return; }
@@ -1904,6 +1950,7 @@ void setup() {
     server.on("/disarm",   handleDisarm);
     server.on("/dropa",    handleDropA);
     server.on("/dropb",    handleDropB);
+    server.on("/resetdoors", handleResetDoors);
     server.on("/stop",     handleStop);
     server.on("/log",      handleLog);
     server.on("/clearlog", handleClearLog);
