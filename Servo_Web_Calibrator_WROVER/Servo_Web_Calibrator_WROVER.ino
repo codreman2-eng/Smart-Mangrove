@@ -308,6 +308,32 @@ static const char HTML_WP[] =
 "and dwell apply. <b>Apply + Save</b> writes the whole mission.json, unsaved waypoint edits included. "
 "<b>&#8594; all waypoints</b> is a waypoint edit: press <b>Save</b> above to keep it. Blocked while armed."
 "</div></div>"
+// Hover release mode settings — every condition tunable in the field.
+"<div class='sw-bar'><h2>HOVER RELEASE <span style='color:#374151'>&#183; drop on a hover, no coordinates</span></h2>"
+"<label style='font-size:.75rem;color:#e5e7eb;display:flex;align-items:center;gap:6px;margin-bottom:8px'>"
+"<input type='checkbox' id='hvEn'> <b>Hover mode ON</b> &nbsp;<span style='color:#6b7280'>(waypoints are ignored while on)</span></label>"
+"<div class='ref-row'>"
+"<div><label>After flight (min)</label><input type='number' id='hvMin' value='2' min='0' max='60' step='0.5'></div>"
+"<div><label>Min height (m)</label><input type='number' id='hvHmin' value='5' min='0' max='120' step='0.5'></div>"
+"<div><label>Min from takeoff (m)</label><input type='number' id='hvHome' value='30' min='0' max='5000' step='1'></div>"
+"</div><div class='ref-row'>"
+"<div><label>Max speed (m/s)</label><input type='number' id='hvSpd' value='2.0' min='0.1' max='15' step='0.1'></div>"
+"<div><label>Hold (s)</label><input type='number' id='hvHoldS' value='3' min='0' max='30' step='0.5'></div>"
+"<div><label>Move between drops (m)</label><input type='number' id='hvRearm' value='10' min='0' max='1000' step='1'></div>"
+"</div><div class='ref-row'>"
+"<div><label>Takeoff height (m)</label><input type='number' id='hvToh' value='3' min='0.5' max='20' step='0.5'></div>"
+"<div><label>&nbsp;</label><label style='display:flex;align-items:center;gap:6px;color:#e5e7eb'>"
+"<input type='checkbox' id='hvB'> Also fire module B</label></div>"
+"</div>"
+"<button class='b-o' style='width:100%;margin-top:8px' onclick='hvApply()'>&#128190; Apply + Save</button>"
+"<div style='font-size:.66rem;color:#6b7280;margin-top:8px;line-height:1.6'>"
+"While <b>armed</b>, fires module A when <b>all</b> hold together for <b>Hold</b> seconds: airborne at least "
+"<b>After flight</b> minutes (the clock starts when height passes <b>Takeoff height</b>), height at or above "
+"<b>Min height</b>, at least <b>Min from takeoff</b> metres from where it took off, OSDK speed at or below "
+"<b>Max speed</b> and the speed worked out from position agreeing (within 1 m/s), and at least "
+"<b>Move between drops</b> metres from the last hover drop. Needs DJI OSDK height and velocity &#8212; "
+"without them it never fires. Blocked while armed."
+"</div></div>"
 "</div>";
 
 #if SIM_MODE
@@ -329,7 +355,20 @@ static const char HTML_SIM_BANNER[] =
 // Mission Control tab
 static const char HTML_MISSION[] =
 "<div class='tab-panel active' id='tabMission'>"
-"<div class='card' style='margin-bottom:12px;text-align:center'><h2>APPROACH</h2>"
+// Hover release mode. Shown instead of APPROACH while hover mode is on: one
+// row per condition, so a ground check shows exactly which one is missing.
+"<div class='card' id='hvCard' style='margin-bottom:12px;text-align:center;display:none'><h2>HOVER RELEASE</h2>"
+"<span id='hvBadge' class='badge s-stop' style='font-size:1rem;padding:6px 18px'>NO DATA</span>"
+"<div style='font-size:1.4rem;font-weight:700;color:#f9fafb' id='hvHold'>--</div>"
+"<div class='kv'><span id='hvTk'>&#9675;</span> Flight time: <b id='hvT'>--</b></div>"
+"<div class='kv'><span id='hvHk'>&#9675;</span> Height above takeoff: <b id='hvH'>--</b></div>"
+"<div class='kv'><span id='hvDk'>&#9675;</span> Distance from takeoff: <b id='hvD'>--</b></div>"
+"<div class='kv'><span id='hvVk'>&#9675;</span> Speed (OSDK): <b id='hvV'>--</b></div>"
+"<div class='kv'><span id='hvPk'>&#9675;</span> Speed (from position): <b id='hvP'>--</b></div>"
+"<div class='kv'><span id='hvRk'>&#9675;</span> Moved since last drop: <b id='hvR'>--</b></div>"
+"<div class='kv'>Hover drops: <b id='hvN'>0</b></div>"
+"</div>"
+"<div class='card' id='apCard' style='margin-bottom:12px;text-align:center'><h2>APPROACH</h2>"
 "<span id='apBadge' class='badge s-stop' style='font-size:1rem;padding:6px 18px'>NO POSITION</span>"
 "<div style='font-size:1.9rem;font-weight:700;color:#f9fafb' id='apDist'>--</div>"
 "<div class='kv'>Next waypoint: <b id='apWp'>--</b></div>"
@@ -661,7 +700,8 @@ static const char HTML3[] =
 "else W.style.display='none';"
 // Fill the release card from the board once per page load, so a refresh
 // does not overwrite values the operator is still typing.
-"if(j.rel&&!relLoaded){relFill(j.rel);relLoaded=true;}}"
+"if(j.rel&&!relLoaded){relFill(j.rel);relLoaded=true;}"
+"if(j.hover&&!hvLoaded){hvFill(j.hover);hvLoaded=true;}}"
 "async function wpCall(q){"
 "const r=await doFetch('/mission'+q);"
 "if(!r||!r.ok)return null;"
@@ -701,6 +741,21 @@ static const char HTML3[] =
 "try{const j=await r.json();relFill(j);"
 "toast('Release saved: <= '+j.spd+' m/s, dwell '+j.dwell+' s, radius '+j.defr+' m',false);"
 "log('Release saved: speed<='+j.spd+' m/s dwell='+j.dwell+' s default r='+j.defr+' m','#4ade80');}catch(e){}}"
+// --- Hover release settings ---
+"let hvLoaded=false;"
+"const HV_F=[['hvMin','min',0,60],['hvHmin','h',0,120],['hvHome','home',0,5000],"
+"['hvSpd','spd',0.1,15],['hvHoldS','hold',0,30],['hvRearm','rearm',0,1000],['hvToh','toh',0.5,20]];"
+"function hvFill(h){document.getElementById('hvEn').checked=!!h.en;document.getElementById('hvB').checked=!!h.b;"
+"for(const f of HV_F)document.getElementById(f[0]).value=h[f[1]];}"
+"async function hvApply(){"
+"let q='/hover?en='+(document.getElementById('hvEn').checked?1:0)+'&b='+(document.getElementById('hvB').checked?1:0);"
+"for(const f of HV_F){const v=relNum(f[0],f[2],f[3]);"
+"if(v===null){toast(f[0]+': must be '+f[2]+'-'+f[3],true);return;}q+='&'+f[1]+'='+v;}"
+"const r=await doFetch(q+'&save=1');"
+"if(!r||!r.ok)return;"
+"try{const h=await r.json();hvFill(h);"
+"const s=h.en?('Hover ON: after '+h.min+' min, h>='+h.h+' m, '+h.home+' m out, <='+h.spd+' m/s for '+h.hold+' s'):'Hover mode OFF - waypoints fire';"
+"toast(s,false);log(s,'#4ade80');}catch(e){}}"
 "async function wpRadiusAll(){"
 "const R=relNum('relR',0.5,100);if(R===null){toast('Radius must be 0.5-100 m',true);return;}"
 "const j=await wpCall('?radiusall=1&r='+R);"
@@ -737,6 +792,24 @@ static const char HTML3[] =
 "document.getElementById('apPred').textContent=!live?'--':j.apPred?'predicted impact':'aircraft position';"
 "document.getElementById('apDw').textContent=!(j.apDwSet>0)?'off (fires at once)':"
 "(live?j.apDw.toFixed(1):'0.0')+' / '+j.apDwSet.toFixed(1)+' s';}"
+// Hover card replaces APPROACH while hover mode is on
+"{const hc=document.getElementById('hvCard'),on=!!j.hvOn;"
+"hc.style.display=on?'block':'none';document.getElementById('apCard').style.display=on?'none':'block';"
+"if(on){const HV_CLASS={'NO DATA':'s-stop','ON GROUND':'s-boot',WAITING:'s-idle',READY:'s-timed',"
+"HOLDING:'s-armed',DROPPING:'s-dropping',DONE:'s-stop'};"
+"const hb=document.getElementById('hvBadge');hb.textContent=j.hvSt;hb.className='badge '+(HV_CLASS[j.hvSt]||'s-stop');"
+"const ck=(id,ok)=>{const e=document.getElementById(id);e.innerHTML=ok?'&#10003;':'&#10007;';e.style.color=ok?'#4ade80':'#f87171';};"
+"const m=Math.floor(j.hvT/60),s=Math.floor(j.hvT%60);"
+"document.getElementById('hvT').textContent=j.hvAir?(m+'m '+(s<10?'0':'')+s+'s / '+j.hvTmin+' min'):'on ground';"
+"document.getElementById('hvH').textContent=j.hvHok?(j.hvH.toFixed(1)+' / '+j.hvHmin+' m'):'no OSDK height';"
+"document.getElementById('hvD').textContent=j.hvD<0?'no takeoff point':(j.hvD.toFixed(0)+' / '+j.hvDmin+' m');"
+"document.getElementById('hvV').textContent=j.hvVok?(j.hvV.toFixed(1)+' / '+j.hvMax+' m/s'):'no OSDK velocity';"
+"document.getElementById('hvP').textContent=j.hvP<0?'--':(j.hvP.toFixed(1)+' m/s');"
+"document.getElementById('hvR').textContent=j.hvR<0?'no drop yet':(j.hvR.toFixed(0)+' / '+j.hvRmin+' m');"
+"document.getElementById('hvN').textContent=j.hvN;"
+"document.getElementById('hvHold').textContent=j.hvSt==='HOLDING'?('hold '+j.hvHold.toFixed(1)+' / '+j.hvHoldSet+' s'):"
+"j.hvSt==='READY'?'all met - ARM to fire':'--';"
+"const c=j.hvOk;ck('hvTk',c&1);ck('hvHk',c&2);ck('hvDk',c&4);ck('hvVk',c&8);ck('hvPk',c&16);ck('hvRk',c&32);}}"
 "if(j.osdkMis!==undefined){"
 "document.getElementById('djMis').textContent=j.osdkMis;"
 "document.getElementById('djEvt').textContent=j.osdkEvt;"
@@ -1047,6 +1120,70 @@ void handleRelease() {
     server.send(200, "application/json", releaseJson());
 }
 
+// ─── Hover release mode settings ───────────────────────────────────────
+static String hoverJson() {
+    const HoverConfig& h = cfg.config().hover;
+    return String("{\"en\":") + (h.enabled ? "true" : "false") +
+           ",\"min\":"   + String(h.min_flight_min, 1) +
+           ",\"h\":"     + String(h.min_height_m, 1) +
+           ",\"home\":"  + String(h.min_home_dist_m, 0) +
+           ",\"spd\":"   + String(h.max_speed_mps, 1) +
+           ",\"hold\":"  + String(h.hold_s, 1) +
+           ",\"rearm\":" + String(h.rearm_dist_m, 0) +
+           ",\"toh\":"   + String(h.takeoff_height_m, 1) +
+           ",\"b\":"     + (h.use_b ? "true" : "false") + "}";
+}
+
+// Like logReleaseChange(): what hover mode was set to when a drop happened
+// is only knowable afterwards from the flight log.
+static void logHoverChange(const char* via) {
+    const HoverConfig& h = cfg.config().hover;
+    char ex[200];
+    snprintf(ex, sizeof(ex),
+             "\"via\":\"%s\",\"en\":%s,\"min\":%.1f,\"h\":%.1f,\"home\":%.0f,"
+             "\"spd\":%.1f,\"hold\":%.1f,\"rearm\":%.0f,\"toh\":%.1f,\"b\":%s",
+             via, h.enabled ? "true" : "false", h.min_flight_min, h.min_height_m,
+             h.min_home_dist_m, h.max_speed_mps, h.hold_s, h.rearm_dist_m,
+             h.takeoff_height_m, h.use_b ? "true" : "false");
+    logger.logEvent("hover_cfg", ex);
+}
+
+// Waypoints tab -> HOVER RELEASE.
+//   /hover                                         current values as JSON
+//   /hover?en=1&min=2&h=5&home=30&spd=2&hold=3&rearm=10&toh=3&b=0[&save=1]
+// Any argument may be omitted and keeps its current value. Answers with what
+// was actually stored (clamped).
+void handleHover() {
+    static const char* const KEYS[] = {"en", "min", "h", "home", "spd", "hold", "rearm", "toh", "b"};
+    bool mutate = false;
+    for (const char* k : KEYS) mutate |= server.hasArg(k);
+    if (mutate) {
+        if (calibrationBlocked()) {
+            server.send(409, "text/plain", "blocked: armed/dropping"); return;
+        }
+        HoverConfig h = cfg.config().hover;
+        auto f = [](const char* k, float cur) {
+            return server.hasArg(k) ? server.arg(k).toFloat() : cur;
+        };
+        if (server.hasArg("en")) h.enabled = server.arg("en") == "1";
+        if (server.hasArg("b"))  h.use_b   = server.arg("b")  == "1";
+        h.min_flight_min   = f("min",   h.min_flight_min);
+        h.min_height_m     = f("h",     h.min_height_m);
+        h.min_home_dist_m  = f("home",  h.min_home_dist_m);
+        h.max_speed_mps    = f("spd",   h.max_speed_mps);
+        h.hold_s           = f("hold",  h.hold_s);
+        h.rearm_dist_m     = f("rearm", h.rearm_dist_m);
+        h.takeoff_height_m = f("toh",   h.takeoff_height_m);
+        cfg.setHover(h);
+        if (engine) engine->resetProgress();
+        logHoverChange("http");
+        if (server.hasArg("save") && !cfg.save()) {
+            server.send(500, "text/plain", "save failed"); return;
+        }
+    }
+    server.send(200, "application/json", hoverJson());
+}
+
 // ─── Waypoints tab ─────────────────────────────────────────────────────
 // One route, action selected by query parameter:
 //   /mission                       list waypoints as JSON (+ release settings)
@@ -1127,6 +1264,7 @@ void handleMission() {
     j += ",\"doorsA\":" + String(modA.doorCount());
     j += ",\"doorsB\":" + String(modB.doorCount());
     j += ",\"rel\":" + releaseJson();
+    j += ",\"hover\":" + hoverJson();
     j += ",\"wp\":[";
     for (uint8_t i = 0; i < mc.drop_count; i++) {
         if (i) j += ",";
@@ -1198,6 +1336,33 @@ void handleStatus() {
         j += ",\"apDw\":"    + String(ap.dwell_s, 1);
         j += ",\"apDwSet\":" + String(mc.release.dwell_s, 1);
     }
+    // Hover release mode — the dashboard's HOVER RELEASE card
+    if (engine && mc.hover.enabled) {
+        const DropLogicEngine::HoverInfo& h = engine->hover();
+        const HoverConfig& hc = mc.hover;
+        const uint8_t ok = (h.ok_time  ? 1 : 0)  | (h.ok_height ? 2 : 0)  | (h.ok_home  ? 4 : 0) |
+                           (h.ok_speed ? 8 : 0)  | (h.ok_agree  ? 16 : 0) | (h.ok_rearm ? 32 : 0);
+        j += ",\"hvOn\":true";
+        j += ",\"hvSt\":\""   + String(DropLogicEngine::hoverName(h.state)) + "\"";
+        j += ",\"hvAir\":"    + String(h.airborne ? "true" : "false");
+        j += ",\"hvT\":"      + String(h.flight_s, 0);
+        j += ",\"hvTmin\":"   + String(hc.min_flight_min, 1);
+        j += ",\"hvH\":"      + String(h.height_m, 1);
+        j += ",\"hvHok\":"    + String(h.height_valid ? "true" : "false");
+        j += ",\"hvHmin\":"   + String(hc.min_height_m, 1);
+        j += ",\"hvD\":"      + String(h.home_dist_m, 1);
+        j += ",\"hvDmin\":"   + String(hc.min_home_dist_m, 0);
+        j += ",\"hvV\":"      + String(h.speed_mps, 1);
+        j += ",\"hvVok\":"    + String(h.speed_valid ? "true" : "false");
+        j += ",\"hvMax\":"    + String(hc.max_speed_mps, 1);
+        j += ",\"hvP\":"      + String(h.pos_speed, 1);
+        j += ",\"hvR\":"      + String(h.rearm_m, 1);
+        j += ",\"hvRmin\":"   + String(hc.rearm_dist_m, 0);
+        j += ",\"hvHold\":"   + String(h.hold_s, 1);
+        j += ",\"hvHoldSet\":" + String(hc.hold_s, 1);
+        j += ",\"hvN\":"      + String(h.drops);
+        j += ",\"hvOk\":"     + String(ok);
+    }
     // RC pilot trigger — live values feed the Calibration tab's RC card
     j += ",\"rcEn\":"   + String(rcIn.enabled() ? "true" : "false");
     j += ",\"rcSig\":"  + String(rcIn.hasSignal() ? "true" : "false");
@@ -1256,13 +1421,15 @@ static void handleSerialLine(String s) {
     cmd.toLowerCase();
 
     if (cmd == "help" || cmd == "?") {
-        Serial.println(F("commands: status | clearlog | arm | disarm | stop | wp | rel"
+        Serial.println(F("commands: status | clearlog | arm | disarm | stop | wp | rel | hover"
                          " | simpos <lat> <lon> | simclear"));
 #if SIM_MODE
         Serial.println(F("  bench (SIM only): wpadd <lat> <lon> [r] [alt] | "
                          "wpradius <idx|all> <r> | wpclear | wpsave"));
         Serial.println(F("  bench (SIM only): rel <max_mps> <dwell_s> [default_r] | "
-                         "simvel <vn> <ve>"));
+                         "simvel <vn> <ve> [height_m]"));
+        Serial.println(F("  bench (SIM only): hover en=1 min=2 h=5 home=30 spd=2 hold=3 "
+                         "rearm=10 toh=3 b=0 [save]"));
         Serial.println(F("  bench (SIM only): balltest — impact-predictor self-test"));
 #endif
         return;
@@ -1337,6 +1504,61 @@ static void handleSerialLine(String s) {
                       r.max_speed_mps, r.dwell_s, r.default_radius_m);
         return;
     }
+    // Hover release mode. Printing works in every build; setting is SIM-only,
+    // like `rel`: in a flight build it is the dashboard's job.
+    //   hover                              config + live conditions
+    //   hover en=1 min=2 h=5 home=30 spd=2 hold=3 rearm=10 toh=3 b=0 [save]
+    if (cmd == "hover") {
+        rest.trim();
+#if SIM_MODE
+        if (rest.length()) {
+            if (calibrationBlocked()) { Serial.println(F("blocked: armed/dropping")); return; }
+            HoverConfig h = cfg.config().hover;
+            bool save = false;
+            String r = rest + " ";
+            int sp2;
+            while ((sp2 = r.indexOf(' ')) >= 0) {
+                String tok = r.substring(0, sp2);
+                r = r.substring(sp2 + 1);
+                if (!tok.length()) continue;
+                if (tok == "save") { save = true; continue; }
+                int eq = tok.indexOf('=');
+                if (eq < 0) { Serial.printf("bad token '%s'\n", tok.c_str()); return; }
+                String k = tok.substring(0, eq);
+                float  v = tok.substring(eq + 1).toFloat();
+                if      (k == "en")    h.enabled          = v != 0.0f;
+                else if (k == "b")     h.use_b            = v != 0.0f;
+                else if (k == "min")   h.min_flight_min   = v;
+                else if (k == "h")     h.min_height_m     = v;
+                else if (k == "home")  h.min_home_dist_m  = v;
+                else if (k == "spd")   h.max_speed_mps    = v;
+                else if (k == "hold")  h.hold_s           = v;
+                else if (k == "rearm") h.rearm_dist_m     = v;
+                else if (k == "toh")   h.takeoff_height_m = v;
+                else { Serial.printf("unknown key '%s'\n", k.c_str()); return; }
+            }
+            cfg.setHover(h);
+            if (engine) engine->resetProgress();
+            logHoverChange("serial");
+            if (save) Serial.println(cfg.save() ? F("(saved)") : F("*** SAVE FAILED ***"));
+            else      Serial.print(F("(RAM only - add 'save')  "));
+        }
+#else
+        if (rest.length()) Serial.println(F("hover settings are SIM-only from serial - use the dashboard"));
+#endif
+        Serial.println("hover: " + hoverJson());
+        if (engine && cfg.config().hover.enabled) {
+            const DropLogicEngine::HoverInfo& h = engine->hover();
+            Serial.printf("  state=%s airborne=%d t=%.0fs h=%.1f%s home=%.1f v=%.1f%s pv=%.1f "
+                          "rearm=%.1f hold=%.1f drops=%u ok[T%d H%d D%d V%d P%d R%d]\n",
+                          DropLogicEngine::hoverName(h.state), h.airborne, h.flight_s,
+                          h.height_m, h.height_valid ? "" : "(none)", h.home_dist_m,
+                          h.speed_mps, h.speed_valid ? "" : "(none)", h.pos_speed,
+                          h.rearm_m, h.hold_s, h.drops,
+                          h.ok_time, h.ok_height, h.ok_home, h.ok_speed, h.ok_agree, h.ok_rearm);
+        }
+        return;
+    }
 #if SIM_MODE
     if (cmd == "simpos") {
         int c = rest.indexOf(' ');
@@ -1347,8 +1569,13 @@ static void handleSerialLine(String s) {
     if (cmd == "simclear") { simSource.clear(); return; }
     if (cmd == "simvel") {
         int c = rest.indexOf(' ');
-        if (c < 0) { Serial.println(F("usage: simvel <vn> <ve>")); return; }
-        simSource.injectVel(rest.substring(0, c).toFloat(), rest.substring(c + 1).toFloat());
+        if (c < 0) { Serial.println(F("usage: simvel <vn> <ve> [height_m]")); return; }
+        String tail = rest.substring(c + 1); tail.trim();
+        int c2 = tail.indexOf(' ');
+        if (c2 < 0) simSource.injectVel(rest.substring(0, c).toFloat(), tail.toFloat());
+        else        simSource.injectVel(rest.substring(0, c).toFloat(),
+                                        tail.substring(0, c2).toFloat(),
+                                        tail.substring(c2 + 1).toFloat());
         return;
     }
 
@@ -1642,6 +1869,7 @@ void setup() {
     server.on("/rccal",    handleRcCal);
     server.on("/mission",  handleMission);
     server.on("/release",  handleRelease);
+    server.on("/hover",    handleHover);
 #if SIM_MODE
     server.on("/simpos",   handleSimPos);
 #endif
@@ -1666,7 +1894,7 @@ void loop() {
     while (Serial.available()) {
         char ch = Serial.read();
         if (ch == '\n' || ch == '\r') { handleSerialLine(serialBuf); serialBuf = ""; }
-        else if (serialBuf.length() < 64) serialBuf += ch;
+        else if (serialBuf.length() < 128) serialBuf += ch;   // a full `hover` line is ~70
     }
     sectMark(SECT_SERIAL);
 

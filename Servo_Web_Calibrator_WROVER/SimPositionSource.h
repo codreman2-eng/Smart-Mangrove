@@ -55,15 +55,17 @@ public:
     // velocity and height, so the impact predictor and the speed gate run
     // exactly as they would on OSDK data. Height is fixed at the 8m mission
     // altitude; vd stays 0.
-    void injectVel(float vn, float ve) {
+    // Height defaults to the 8m mission altitude; pass one to walk hover mode
+    // through takeoff and landing.
+    void injectVel(float vn, float ve, float height_m = 8.0f) {
         _p.vn_mps       = vn;
         _p.ve_mps       = ve;
         _p.vd_mps       = 0.0f;
         _p.vel_valid    = true;
-        _p.height_m     = 8.0f;
+        _p.height_m     = height_m;
         _p.height_valid = true;
-        Serial.printf("[SIMPOS] Velocity vn=%.1f ve=%.1f m/s (%.1f m/s)\n",
-                      vn, ve, _p.horizontalSpeed());
+        Serial.printf("[SIMPOS] Velocity vn=%.1f ve=%.1f m/s (%.1f m/s), height %.1f m\n",
+                      vn, ve, _p.horizontalSpeed(), height_m);
     }
 
     void clear() {

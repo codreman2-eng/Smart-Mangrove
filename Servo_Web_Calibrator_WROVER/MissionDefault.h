@@ -57,6 +57,17 @@ const char MISSION_DEFAULT_JSON[] PROGMEM = R"json({
     "dwell_s": 0.0,
     "default_radius_m": 5.0
   },
+  "hover": {
+    "enabled": false,
+    "min_flight_min": 2.0,
+    "min_height_m": 5.0,
+    "min_home_dist_m": 30.0,
+    "max_speed_mps": 2.0,
+    "hold_s": 3.0,
+    "rearm_dist_m": 10.0,
+    "takeoff_height_m": 3.0,
+    "use_b": false
+  },
   "drops": [
     { "id": 1, "lat_deg": 9.345678, "lon_deg": -79.876543, "alt_m": 8.0, "radius_m": 3.0 },
     { "id": 2, "lat_deg": 9.345700, "lon_deg": -79.876520, "alt_m": 8.0, "radius_m": 3.0 },

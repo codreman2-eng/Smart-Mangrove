@@ -113,10 +113,11 @@
 //
 // 0 = flight build. Real servo PWM on GPIO 12/13.
 //
-// The committed default is 1 so that anyone flashing a fresh clone gets the
-// safe build. The 2026-09-30 flight flash was built from 22d753a with 0 here;
-// set 0 only for a supervised flight build, and set it back before committing.
-#define SIM_MODE 1
+// The committed default WAS 1, so that anyone flashing a fresh clone gets the
+// safe build. Since 2026-10-29 it is committed as 0 on the owner's decision:
+// the board is in its real-test period (hover release mode, servos live).
+// Flashing this tree drives real servos — put it back to 1 when that ends.
+#define SIM_MODE 0
 
 // Drop announce LED. Lit for exactly the window the servo is (or would be)
 // driven, then blips out which door just dropped.

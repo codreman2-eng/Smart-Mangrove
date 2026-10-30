@@ -83,6 +83,47 @@ struct ReleaseConfig {
     static constexpr float RADIUS_MIN = 0.5f,  RADIUS_MAX = 100.0f;
 };
 
+// HOVER release mode (2026-10-29). Fires on what the aircraft is DOING rather
+// than where it is: no waypoint coordinates, the pilot or GS Pro mission just
+// stops somewhere far enough out and the launcher drops. Every condition must
+// hold at once, continuously for hold_s, while ARMED:
+//
+//   airborne for min_flight_min   (airborne = height above takeoff first
+//                                  reached takeoff_height_m)
+//   height  >= min_height_m       (never on the ground or while landing)
+//   home    >= min_home_dist_m    (never over the pilot, never during RTH)
+//   OSDK speed <= max_speed_mps   (needs velocity health — no OSDK, no drop)
+//   position-derived speed agrees (second, independent source; see
+//                                  DropLogicEngine::POS_SPEED_TOL_MPS)
+//   moved >= rearm_dist_m since the last hover drop (one long hover must not
+//                                  empty every door in one place)
+//
+// When enabled it REPLACES waypoint auto-fire; the waypoint list is ignored.
+// Edited from the dashboard (Waypoints tab -> HOVER RELEASE), persisted under
+// "hover" in mission.json. Absent block = disabled, so an older mission.json
+// keeps its waypoint behaviour.
+struct HoverConfig {
+    bool  enabled          = false;
+    float min_flight_min   = 2.0f;
+    float min_height_m     = 5.0f;
+    float min_home_dist_m  = 30.0f;
+    float max_speed_mps    = 2.0f;
+    float hold_s           = 3.0f;
+    float rearm_dist_m     = 10.0f;
+    float takeoff_height_m = 3.0f;
+    // Module B is uncalibrated as of 2026-10-29; a hover drop fires A only
+    // unless this is set.
+    bool  use_b            = false;
+
+    static constexpr float FLIGHT_MAX  = 60.0f;   // minutes
+    static constexpr float HEIGHT_MAX  = 120.0f;
+    static constexpr float HOME_MAX    = 5000.0f;
+    static constexpr float SPEED_MIN   = 0.1f,  SPEED_MAX = 15.0f;
+    static constexpr float HOLD_MAX    = 30.0f;
+    static constexpr float REARM_MAX   = 1000.0f;
+    static constexpr float TAKEOFF_MIN = 0.5f,  TAKEOFF_MAX = 20.0f;
+};
+
 // Full mission config
 struct MissionConfig {
     String          mission_name;
@@ -92,6 +133,7 @@ struct MissionConfig {
     ModuleConfig    module_b;
     RcTriggerConfig rc_trigger;
     ReleaseConfig   release;
+    HoverConfig     hover;
     DropPoint       drops[10];
     uint8_t         drop_count             = 0;
     bool            loaded                 = false;
@@ -126,6 +168,8 @@ public:
     // Clamps each value into ReleaseConfig's limits; read config().release
     // back for what was actually stored.
     void setRelease(float max_speed_mps, float dwell_s, float default_radius_m);
+    // Same contract: every field clamped into HoverConfig's limits.
+    void setHover(const HoverConfig& h);
 
     // Waypoint editing (dashboard Waypoints tab). All operate in RAM; the
     // caller must still call save() to persist. Drop ids are renumbered

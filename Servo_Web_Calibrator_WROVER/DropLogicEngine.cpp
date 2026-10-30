@@ -23,7 +23,17 @@ void DropLogicEngine::update() {
         // here, not at the trigger: see _release_snap in the header. The
         // logger is still in its drop window this tick, so the row is not
         // sync'd until module B's window closes.
-        if (!_manual_pair) {
+        if (_hover_drop) {
+            const HoverInfo& h = _hover_snap;
+            char ex[224];
+            snprintf(ex, sizeof(ex),
+                     "\"n\":%u,\"t\":%.0f,\"h\":%.1f,\"home\":%.1f,\"spd\":%.2f,"
+                     "\"pspd\":%.2f,\"rearm\":%.1f,\"hold\":%.1f,\"max\":%.1f",
+                     drop_id, h.flight_s, h.height_m, h.home_dist_m, h.speed_mps,
+                     h.pos_speed, h.rearm_m, h.hold_s,
+                     _cfg.config().hover.max_speed_mps);
+            _log.logEvent("hover_release", ex);
+        } else if (!_manual_pair) {
             char ex[192];
             snprintf(ex, sizeof(ex),
                      "\"id\":%u,\"dist\":%.2f,\"r\":%.1f,\"spd\":%.2f,\"vel\":%s,"
@@ -41,6 +51,17 @@ void DropLogicEngine::update() {
         if (resA == DropResult::FAULT) {
             _sm.setFault("Module A fault during drop");
             _phase = Phase::IDLE;
+            _hover_drop = false;
+            return;
+        }
+
+        // Hover mode fires module A alone unless hover.use_b is set — B is
+        // uncalibrated as of 2026-10-29.
+        if (_hover_drop && !_cfg.config().hover.use_b) {
+            _sm.setDropping(false);
+            Serial.printf("[DLE] Hover drop %d complete (module A only)\n", drop_id);
+            _hover_drop = false;
+            _phase = Phase::IDLE;
             return;
         }
 
@@ -57,8 +78,9 @@ void DropLogicEngine::update() {
                         DropResult::ALREADY_DONE);
             _sm.setDropping(false);
             _phase = Phase::IDLE;
-            if (!_manual_pair) _next_drop_idx++;
+            if (!_manual_pair && !_hover_drop) _next_drop_idx++;
             _manual_pair = false;
+            _hover_drop  = false;
             return;
         }
         _phase = Phase::WAITING_B;
@@ -76,9 +98,10 @@ void DropLogicEngine::update() {
         Serial.printf("[DLE] Drop %d complete%s\n",
                       drop_id, _manual_pair ? " (pilot RC trigger)" : "");
 
-        // A pilot-commanded pair must not consume a planned GPS waypoint
-        if (!_manual_pair) _next_drop_idx++;
+        // A pilot-commanded or hover pair must not consume a planned GPS waypoint
+        if (!_manual_pair && !_hover_drop) _next_drop_idx++;
         _manual_pair = false;
+        _hover_drop  = false;
         _phase = Phase::IDLE;
 
         if (resB == DropResult::FAULT) {
@@ -91,14 +114,30 @@ void DropLogicEngine::update() {
     // The approach is computed disarmed too, so the dashboard shows the
     // aircraft closing on the waypoint before the operator arms. Nothing
     // below the isArmed() check further down can move a servo.
+    const bool hover_mode = _cfg.config().hover.enabled;
     if (missionComplete()) {
         _approach = ApproachInfo(); _approach.state = Approach::DONE;
         _dwell_start_ms = 0;
+        _hold_start_ms  = 0;
+        if (hover_mode) _hover.state = Hover::DONE;   // keep the last numbers on show
+        else            _hover = HoverInfo();
         return;
     }
 
     _pos.update();
     Position cur = _pos.read();
+    _trackFlight(cur);
+
+    // Hover mode replaces the waypoint gate entirely; nothing below runs.
+    if (hover_mode) {
+        _approach = ApproachInfo();
+        _dwell_start_ms = 0;
+        _updateHover(cur);
+        return;
+    }
+    _hover = HoverInfo();
+    _hold_start_ms = 0;
+
     if (!cur.valid) { _approach = ApproachInfo(); _dwell_start_ms = 0; return; }
 
     const MissionConfig& mc  = _cfg.config();
@@ -247,12 +286,179 @@ const char* DropLogicEngine::approachName(Approach a) {
     return "?";
 }
 
+const char* DropLogicEngine::hoverName(Hover h) {
+    switch (h) {
+        case Hover::OFF:       return "OFF";
+        case Hover::NO_DATA:   return "NO DATA";
+        case Hover::ON_GROUND: return "ON GROUND";
+        case Hover::WAITING:   return "WAITING";
+        case Hover::READY:     return "READY";
+        case Hover::HOLDING:   return "HOLDING";
+        case Hover::DROPPING:  return "DROPPING";
+        case Hover::DONE:      return "DONE";
+    }
+    return "?";
+}
+
+void DropLogicEngine::_trackFlight(const Position& cur) {
+    const HoverConfig& hc = _cfg.config().hover;
+    const uint32_t now = millis();
+
+    // Position-derived speed over a >= 1 s window. Any invalid sample starts
+    // the window over, so a gap in the fix can never stretch dt and read as
+    // a slow aircraft.
+    if (!cur.valid) { _ref_ms = 0; _pos_speed_ms = 0; return; }
+    if (!_ref_ms) {
+        _ref_pos = cur; _ref_ms = now ? now : 1;
+    } else if (now - _ref_ms >= 1000) {
+        const float dt = (now - _ref_ms) / 1000.0f;
+        _pos_speed    = haversineDistance(_ref_pos.lat_deg, _ref_pos.lon_deg,
+                                          cur.lat_deg, cur.lon_deg) / dt;
+        _pos_speed_ms = now ? now : 1;
+        _ref_pos = cur; _ref_ms = now ? now : 1;
+    }
+
+    // Takeoff / landing. Height comes only from OSDK; without it the
+    // aircraft is never "airborne" and hover mode can never fire.
+    if (!cur.height_valid) return;
+    const bool low = cur.height_m < hc.takeoff_height_m;
+    if (!_takeoff_ms) {
+        if (low) {
+            _home = cur; _have_home = true;            // keeps following until launch
+        } else {
+            _takeoff_ms = now ? now : 1;
+            if (!_have_home) { _home = cur; _have_home = true; }
+            _low_since_ms = 0;
+            char ex[96];
+            snprintf(ex, sizeof(ex), "\"h\":%.1f,\"home_lat\":%.7f,\"home_lon\":%.7f",
+                     cur.height_m, _home.lat_deg, _home.lon_deg);
+            _log.logEvent("takeoff", ex);
+            Serial.printf("[DLE] Takeoff detected at %.1f m - flight clock started\n",
+                          cur.height_m);
+        }
+    } else if (low) {
+        if (!_low_since_ms) _low_since_ms = now ? now : 1;
+        else if (now - _low_since_ms >= LANDED_MS) {
+            _log.logEvent("landed", "");
+            Serial.println("[DLE] Landed - flight clock and home point reset");
+            _takeoff_ms = 0; _low_since_ms = 0;
+            _home = cur; _have_home = true;
+            _have_last_drop = false;
+        }
+    } else {
+        _low_since_ms = 0;
+    }
+}
+
+void DropLogicEngine::_updateHover(const Position& cur) {
+    const HoverConfig& hc = _cfg.config().hover;
+    const uint32_t now   = millis();
+    const bool     armed = _sm.isArmed();
+    const uint8_t  drops = _hover.drops;
+
+    _hover = HoverInfo();
+    _hover.drops = drops;
+
+    if (!cur.valid || !cur.height_valid) {
+        _hover.state   = Hover::NO_DATA;
+        _hold_start_ms = 0;
+        return;
+    }
+
+    HoverInfo& h = _hover;
+    h.airborne     = _takeoff_ms != 0;
+    h.flight_s     = h.airborne ? (now - _takeoff_ms) / 1000.0f : 0.0f;
+    h.height_m     = cur.height_m;
+    h.height_valid = true;
+    h.home_dist_m  = _have_home ? haversineDistance(_home.lat_deg, _home.lon_deg,
+                                                    cur.lat_deg, cur.lon_deg) : -1.0f;
+    h.speed_valid  = cur.vel_valid;
+    h.speed_mps    = cur.vel_valid ? cur.horizontalSpeed() : 0.0f;
+    const bool pos_fresh = _pos_speed_ms && (now - _pos_speed_ms) <= 2000;
+    h.pos_speed    = pos_fresh ? _pos_speed : -1.0f;
+    h.rearm_m      = _have_last_drop ? haversineDistance(_last_drop.lat_deg, _last_drop.lon_deg,
+                                                         cur.lat_deg, cur.lon_deg) : -1.0f;
+
+    h.ok_time   = h.airborne && h.flight_s >= hc.min_flight_min * 60.0f;
+    h.ok_height = h.height_m >= hc.min_height_m;
+    h.ok_home   = _have_home && h.home_dist_m >= hc.min_home_dist_m;
+    h.ok_speed  = h.speed_valid && h.speed_mps <= hc.max_speed_mps;
+    h.ok_agree  = pos_fresh && _pos_speed <= hc.max_speed_mps + POS_SPEED_TOL_MPS;
+    h.ok_rearm  = !_have_last_drop || h.rearm_m >= hc.rearm_dist_m;
+    const bool all = h.ok_time && h.ok_height && h.ok_home &&
+                     h.ok_speed && h.ok_agree && h.ok_rearm;
+
+    // Like the waypoint dwell: the hold runs only ARMED and restarts on any
+    // break, so arming mid-hover waits the full hold_s.
+    if (!all || !armed) {
+        _hold_start_ms = 0;
+    } else if (!_hold_start_ms) {
+        _hold_start_ms = now ? now : 1;
+        Serial.printf("[DLE] HOVER conditions met - holding %.1fs "
+                      "(h=%.1f home=%.0f v=%.1f pv=%.1f)\n",
+                      hc.hold_s, h.height_m, h.home_dist_m, h.speed_mps, _pos_speed);
+    }
+    const uint32_t held_ms = _hold_start_ms ? now - _hold_start_ms : 0;
+    h.hold_s = held_ms / 1000.0f;
+
+    h.state = !h.airborne ? Hover::ON_GROUND
+            : !all        ? Hover::WAITING
+            : !armed      ? Hover::READY
+            :               Hover::HOLDING;
+
+    if (!armed) return;
+
+    // 1 Hz trace while armed, for the bench and for a tethered ground check.
+    static uint32_t last_trace_ms = 0;
+    if (now - last_trace_ms >= 1000) {
+        last_trace_ms = now;
+        Serial.printf("[DLE] HOVER %s t=%.0fs h=%.1f home=%.0f v=%s pv=%s rearm=%s hold=%.1f "
+                      "[%c%c%c%c%c%c]\n",
+                      hoverName(h.state), h.flight_s, h.height_m, h.home_dist_m,
+                      h.speed_valid ? String(h.speed_mps, 1).c_str() : "none",
+                      pos_fresh ? String(_pos_speed, 1).c_str() : "none",
+                      _have_last_drop ? String(h.rearm_m, 0).c_str() : "-",
+                      h.hold_s,
+                      h.ok_time ? 'T' : 't', h.ok_height ? 'H' : 'h',
+                      h.ok_home ? 'D' : 'd', h.ok_speed ? 'V' : 'v',
+                      h.ok_agree ? 'P' : 'p', h.ok_rearm ? 'R' : 'r');
+    }
+
+    if (!all || held_ms < (uint32_t)(hc.hold_s * 1000.0f + 0.5f)) return;
+
+    // ── Fire ────────────────────────────────────────────────────────────
+    _hover.drops = drops + 1;
+    _hover_snap  = _hover;
+    Serial.printf("[DLE] >>> HOVER release #%u - %.0fs airborne, h=%.1f m, "
+                  "%.0f m from home, %.1f m/s (pos %.1f), held %.1fs\n",
+                  _hover.drops, h.flight_s, h.height_m, h.home_dist_m,
+                  h.speed_mps, _pos_speed, h.hold_s);
+    _hold_start_ms = 0;
+    _pending_pos   = cur;
+    _manual_pair   = false;
+    _hover_drop    = true;
+
+    // Same defect (c) guard as the waypoint path
+    if (!_modA.startDrop()) {
+        Serial.println("[DLE] *** HOVER release refused - module A has no doors left ***");
+        _recordDrop(_hover.drops, 0, _modA.doorsDropped(), cur, DropResult::ALREADY_DONE);
+        _hover_drop = false;
+        return;
+    }
+    _last_drop = cur; _have_last_drop = true;
+    _hover.state = Hover::DROPPING;
+    _sm.setDropping(true);
+    Serial.printf("[DLE] Module A - hover drop %u\n", _hover.drops);
+    _phase = Phase::WAITING_A;
+}
+
 bool DropLogicEngine::launcherEmpty() const {
     return _modA.isEmpty() || _modB.isEmpty();
 }
 
 uint8_t DropLogicEngine::_currentDropId() const {
     if (_manual_pair) return 0;                       // 0 = pilot/RC commanded
+    if (_hover_drop)  return _hover.drops;            // hover drops count 1..n
     if (_pending_idx >= _cfg.config().drop_count) return 0;
     return _cfg.config().drops[_pending_idx].id;
 }
@@ -294,7 +500,9 @@ void DropLogicEngine::abort() {
 
     _phase          = Phase::IDLE;
     _manual_pair    = false;
+    _hover_drop     = false;
     _dwell_start_ms = 0;
+    _hold_start_ms  = 0;
     // _next_drop_idx deliberately untouched — see abort() in the header.
 }
 
@@ -327,5 +535,10 @@ bool DropLogicEngine::missionComplete() const {
     // the run must END when the doors run out rather than keep evaluating
     // waypoints it can never service. Without it the engine would re-trigger
     // at the same waypoint every loop and spam failure rows.
+    //
+    // Hover mode has no waypoint list to run out of: it is over when the
+    // modules it fires are empty — module A alone unless hover.use_b.
+    const HoverConfig& hc = _cfg.config().hover;
+    if (hc.enabled) return hc.use_b ? launcherEmpty() : _modA.isEmpty();
     return _next_drop_idx >= _cfg.config().drop_count || launcherEmpty();
 }

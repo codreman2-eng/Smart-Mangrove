@@ -102,6 +102,25 @@ bool ConfigManager::_parse(const char* path) {
                    rel["default_radius_m"] | def.default_radius_m);
     }
 
+    // --- Hover release mode ---
+    // Absent block = HoverConfig defaults (disabled). Routed through
+    // setHover() for the same reason as the release block.
+    JsonObject hv = doc["hover"];
+    if (!hv.isNull()) {
+        const HoverConfig def;
+        HoverConfig h;
+        h.enabled          = hv["enabled"]          | def.enabled;
+        h.min_flight_min   = hv["min_flight_min"]   | def.min_flight_min;
+        h.min_height_m     = hv["min_height_m"]     | def.min_height_m;
+        h.min_home_dist_m  = hv["min_home_dist_m"]  | def.min_home_dist_m;
+        h.max_speed_mps    = hv["max_speed_mps"]    | def.max_speed_mps;
+        h.hold_s           = hv["hold_s"]           | def.hold_s;
+        h.rearm_dist_m     = hv["rearm_dist_m"]     | def.rearm_dist_m;
+        h.takeoff_height_m = hv["takeoff_height_m"] | def.takeoff_height_m;
+        h.use_b            = hv["use_b"]            | def.use_b;
+        setHover(h);
+    }
+
     // --- Drop points ---
     JsonArray drops = doc["drops"];
     _cfg.drop_count = 0;
@@ -116,7 +135,8 @@ bool ConfigManager::_parse(const char* path) {
         dp.completed       = false;
     }
 
-    _cfg.loaded = (_cfg.drop_count > 0);
+    // Hover mode needs no waypoints, so an empty list is a valid mission there
+    _cfg.loaded = (_cfg.drop_count > 0) || _cfg.hover.enabled;
     Serial.printf("[CFG] Loaded '%s' — %d drop points\n",
                   _cfg.mission_name.c_str(), _cfg.drop_count);
     return _cfg.loaded;
@@ -156,6 +176,17 @@ bool ConfigManager::save() {
     rel["max_speed_mps"]    = _cfg.release.max_speed_mps;
     rel["dwell_s"]          = _cfg.release.dwell_s;
     rel["default_radius_m"] = _cfg.release.default_radius_m;
+
+    JsonObject hv = doc["hover"].to<JsonObject>();
+    hv["enabled"]          = _cfg.hover.enabled;
+    hv["min_flight_min"]   = _cfg.hover.min_flight_min;
+    hv["min_height_m"]     = _cfg.hover.min_height_m;
+    hv["min_home_dist_m"]  = _cfg.hover.min_home_dist_m;
+    hv["max_speed_mps"]    = _cfg.hover.max_speed_mps;
+    hv["hold_s"]           = _cfg.hover.hold_s;
+    hv["rearm_dist_m"]     = _cfg.hover.rearm_dist_m;
+    hv["takeoff_height_m"] = _cfg.hover.takeoff_height_m;
+    hv["use_b"]            = _cfg.hover.use_b;
 
     JsonArray drops = doc["drops"].to<JsonArray>();
     for (uint8_t i = 0; i < _cfg.drop_count; i++) {
@@ -216,6 +247,23 @@ void ConfigManager::setRelease(float max_speed_mps, float dwell_s, float default
                                            ReleaseConfig::DWELL_MIN,  ReleaseConfig::DWELL_MAX);
     _cfg.release.default_radius_m = clampf(default_radius_m,
                                            ReleaseConfig::RADIUS_MIN, ReleaseConfig::RADIUS_MAX);
+}
+
+void ConfigManager::setHover(const HoverConfig& h) {
+    auto clampf = [](float v, float lo, float hi) {
+        return !(v >= lo) ? lo : (v > hi ? hi : v);
+    };
+    HoverConfig& c = _cfg.hover;
+    c.enabled          = h.enabled;
+    c.min_flight_min   = clampf(h.min_flight_min,   0.0f, HoverConfig::FLIGHT_MAX);
+    c.min_height_m     = clampf(h.min_height_m,     0.0f, HoverConfig::HEIGHT_MAX);
+    c.min_home_dist_m  = clampf(h.min_home_dist_m,  0.0f, HoverConfig::HOME_MAX);
+    c.max_speed_mps    = clampf(h.max_speed_mps,    HoverConfig::SPEED_MIN, HoverConfig::SPEED_MAX);
+    c.hold_s           = clampf(h.hold_s,           0.0f, HoverConfig::HOLD_MAX);
+    c.rearm_dist_m     = clampf(h.rearm_dist_m,     0.0f, HoverConfig::REARM_MAX);
+    c.takeoff_height_m = clampf(h.takeoff_height_m, HoverConfig::TAKEOFF_MIN, HoverConfig::TAKEOFF_MAX);
+    c.use_b            = h.use_b;
+    if (c.enabled) _cfg.loaded = true;
 }
 
 bool ConfigManager::addDrop(double lat_deg, double lon_deg, float alt_m, float radius_m) {
@@ -279,6 +327,13 @@ void ConfigManager::printSummary() const {
     Serial.printf("  Release     : speed<=%.1f m/s  dwell=%.1f s  default r=%.1f m\n",
                   _cfg.release.max_speed_mps, _cfg.release.dwell_s,
                   _cfg.release.default_radius_m);
+    const HoverConfig& h = _cfg.hover;
+    Serial.printf("  Hover mode  : %s  after %.1f min  h>=%.1f m  home>=%.0f m  "
+                  "speed<=%.1f m/s for %.1f s  rearm %.0f m  takeoff %.1f m  %s\n",
+                  h.enabled ? "ENABLED (waypoints ignored)" : "off",
+                  h.min_flight_min, h.min_height_m, h.min_home_dist_m,
+                  h.max_speed_mps, h.hold_s, h.rearm_dist_m, h.takeoff_height_m,
+                  h.use_b ? "A+B" : "A only");
     Serial.printf("  Drop points : %d\n", _cfg.drop_count);
     for (uint8_t i = 0; i < _cfg.drop_count; i++) {
         const DropPoint& dp = _cfg.drops[i];

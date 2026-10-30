@@ -66,6 +66,48 @@ public:
     const ApproachInfo& approach() const { return _approach; }
     static const char* approachName(Approach a);
 
+    // ── HOVER release mode (HoverConfig in ConfigManager.h) ─────────────
+    // How far the position-derived speed may exceed max_speed_mps and still
+    // count as agreeing with OSDK velocity. Differencing 1 s of A3 fused
+    // position is noisier than the A3's own velocity; this tolerance only
+    // has to catch a velocity field that is plainly wrong (bad decode, wrong
+    // units, stuck at 0), not a few tenths of jitter.
+    static constexpr float POS_SPEED_TOL_MPS = 1.0f;
+    // Below takeoff height this long = landed: the flight clock and home
+    // point reset, so a second sortie counts its own minutes from its own
+    // launch site.
+    static constexpr uint32_t LANDED_MS = 10000;
+
+    enum class Hover : uint8_t {
+        OFF,          // hover mode disabled
+        NO_DATA,      // no position, or no OSDK height — cannot fire, ever
+        ON_GROUND,    // never reached takeoff height (or landed)
+        WAITING,      // airborne, at least one condition not met
+        READY,        // every condition met but DISARMED — would fire if armed
+        HOLDING,      // every condition met, armed, counting hold_s
+        DROPPING,     // sequence running
+        DONE          // out of doors
+    };
+    struct HoverInfo {
+        Hover    state        = Hover::OFF;
+        bool     airborne     = false;
+        float    flight_s     = 0.0f;   // since takeoff
+        float    height_m     = 0.0f;
+        bool     height_valid = false;
+        float    home_dist_m  = -1.0f;  // -1 = no home point yet
+        float    speed_mps    = 0.0f;   // OSDK
+        bool     speed_valid  = false;
+        float    pos_speed    = -1.0f;  // position-derived; -1 = not fresh
+        float    rearm_m      = -1.0f;  // from last hover drop; -1 = none yet
+        float    hold_s       = 0.0f;   // all-conditions time so far, armed
+        uint8_t  drops        = 0;      // hover drops this boot
+        // One bit per condition, for the dashboard checklist
+        bool ok_time = false, ok_height = false, ok_home = false,
+             ok_speed = false, ok_agree = false, ok_rearm = false;
+    };
+    const HoverInfo& hover() const { return _hover; }
+    static const char* hoverName(Hover h);
+
     DropLogicEngine(ConfigManager&   cfg,
                     IPositionSource& pos,
                     ActuatorModule&  modA,
@@ -125,7 +167,7 @@ public:
     // waypoint list is edited: the index is a position into drops[], so
     // editing the list underneath it would leave the engine pointing at a
     // different waypoint than the operator thinks, or past the end.
-    void resetProgress() { _next_drop_idx = 0; _dwell_start_ms = 0; }
+    void resetProgress() { _next_drop_idx = 0; _dwell_start_ms = 0; _hold_start_ms = 0; }
 
 private:
     enum class Phase { IDLE, WAITING_A, WAITING_B };
@@ -155,6 +197,28 @@ private:
     // would sync to flash inside module A's drive window and overshoot it.
     ApproachInfo _release_snap;
     float        _release_max_speed = 0.0f;
+
+    // ── Hover mode state ───────────────────────────────────────────────
+    HoverInfo _hover;
+    HoverInfo _hover_snap;            // the gate's view at the trigger, for the log
+    bool      _hover_drop     = false; // in-flight sequence came from hover mode
+    uint32_t  _hold_start_ms  = 0;     // 0 = not running
+    uint32_t  _takeoff_ms     = 0;     // 0 = on the ground
+    uint32_t  _low_since_ms   = 0;     // below takeoff height since (airborne only)
+    Position  _home;                   // last on-ground position before takeoff
+    bool      _have_home      = false;
+    Position  _last_drop;              // where the last hover drop fired
+    bool      _have_last_drop = false;
+    Position  _ref_pos;                // start of the position-speed window
+    uint32_t  _ref_ms         = 0;
+    float     _pos_speed      = 0.0f;
+    uint32_t  _pos_speed_ms   = 0;     // when _pos_speed was computed; 0 = never
+
+    // Takeoff / landing / home / position-derived speed. Runs every idle
+    // tick in either mode so the numbers are there the moment hover mode is
+    // switched on.
+    void _trackFlight(const Position& cur);
+    void _updateHover(const Position& cur);
 
     // drop id to log for the in-flight sequence (0 = pilot/RC commanded)
     uint8_t _currentDropId() const;
