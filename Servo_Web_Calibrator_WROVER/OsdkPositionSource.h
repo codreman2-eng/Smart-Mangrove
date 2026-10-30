@@ -85,6 +85,10 @@ public:
     uint32_t resyncs()   const { return _resyncs; }
     uint16_t passFlag()  const { return _last_flag; }
     uint32_t lastFixMs() const { return _last_fix_ms; }
+    // Link vs fix are different questions: indoors the A3 broadcasts at full
+    // rate with health 0, and "no fix" must not read as "no link".
+    uint32_t lastFrameMs() const { return _last_frame_ms; }
+    uint8_t  gpsHealth()   const { return _last_health; }   // 0-5; fix needs >= 3
 
     // Mission pushes (see OsdkMissionMsg). STATUS is queued only when its
     // bytes change — if the A3 does send it, it may repeat at a steady rate,
@@ -113,6 +117,7 @@ private:
 
     Position _last;
     uint32_t _last_fix_ms = 0;
+    uint32_t _last_frame_ms = 0;   // any CRC-good frame, fix or not
     uint16_t _last_flag   = 0;
     uint32_t _frames = 0, _crc_err = 0, _resyncs = 0;
     uint8_t  _last_health   = 0;   // reported even when the fix gate rejects

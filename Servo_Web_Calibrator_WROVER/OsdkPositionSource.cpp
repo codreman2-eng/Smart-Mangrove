@@ -135,6 +135,7 @@ void OsdkPositionSource::_consume() {
         }
 
         _frames++;
+        _last_frame_ms = millis();
         const uint8_t* pl  = fr + HDR_LEN;
         const uint16_t pn  = length - HDR_LEN - 4;
         const uint8_t  enc = (fr[4] >> 5) & 0x07;   // header bytes 4-7: pad(5) enc(3)

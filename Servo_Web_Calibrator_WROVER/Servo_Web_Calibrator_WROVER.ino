@@ -363,6 +363,7 @@ static const char HTML_MISSION[] =
 // row per condition, so a ground check shows exactly which one is missing.
 "<div class='card' id='hvCard' style='margin-bottom:12px;text-align:center;display:none'><h2>HOVER RELEASE</h2>"
 "<span id='hvBadge' class='badge s-stop' style='font-size:1rem;padding:6px 18px'>NO DATA</span>"
+"<div id='hvLink' style='font-size:.72rem;line-height:1.5;margin:6px 0 4px;color:#9ca3af'>--</div>"
 "<div style='font-size:1.4rem;font-weight:700;color:#f9fafb' id='hvHold'>--</div>"
 "<div class='kv'><span id='hvTk'>&#9675;</span> Flight time: <b id='hvT'>--</b></div>"
 "<div class='kv'><span id='hvHk'>&#9675;</span> Height above takeoff: <b id='hvH'>--</b></div>"
@@ -803,6 +804,20 @@ static const char HTML3[] =
 "if(on){const HV_CLASS={'NO DATA':'s-stop','ON GROUND':'s-boot',WAITING:'s-idle',READY:'s-timed',"
 "HOLDING:'s-armed',DROPPING:'s-dropping',DONE:'s-stop'};"
 "const hb=document.getElementById('hvBadge');hb.textContent=j.hvSt;hb.className='badge '+(HV_CLASS[j.hvSt]||'s-stop');"
+// Tell a missing wire from a missing GPS fix from missing broadcast fields:
+// NO DATA alone reads as a dead link (it confused the operator on 2026-10-30)
+"const now=Date.now();let fps=0;"
+"if(window._fr0!==undefined&&now>window._ft0)fps=Math.max(0,Math.round((j.osdkFr-window._fr0)*1000/(now-window._ft0)));"
+"window._fr0=j.osdkFr;window._ft0=now;"
+"const lk=document.getElementById('hvLink');const fl=j.osdkFlag||0,hh=j.osdkHealth||0;"
+"const setL=(t,c)=>{lk.innerHTML=t;lk.style.color=c;};"
+"if(!j.osdkLink){if(j.hvSt==='NO DATA'){hb.textContent='NO DJI LINK';hb.className='badge s-fault';}"
+"setL('&#10007; No data from the drone (A3). Check the GPIO 25 wire, the common ground, and that the drone is powered on.','#f87171');}"
+"else if(!(fl&32)||!(fl&8)){if(j.hvSt==='NO DATA'){hb.textContent='LINK OK - MISSING DATA';hb.className='badge s-fault';}"
+"setL('&#10003; Drone link OK ('+fps+' frames/s) but the broadcast is missing '+(!(fl&32)?'POSITION ':'')+(!(fl&8)?'VELOCITY':'')+'. Enable it in DJI Assistant 2.','#fbbf24');}"
+"else if(hh<3){if(j.hvSt==='NO DATA'){hb.textContent='LINK OK - WAITING GPS';hb.className='badge s-idle';}"
+"setL('&#10003; Drone link OK ('+fps+' frames/s). GPS health '+hh+'/5 - needs 3. Normal indoors: go outside and wait for satellites.','#fbbf24');}"
+"else setL('&#10003; Drone link OK ('+fps+' frames/s) &#183; GPS health '+hh+'/5','#4ade80');"
 "const ck=(id,ok)=>{const e=document.getElementById(id);e.innerHTML=ok?'&#10003;':'&#10007;';e.style.color=ok?'#4ade80':'#f87171';};"
 "const m=Math.floor(j.hvT/60),s=Math.floor(j.hvT%60);"
 "document.getElementById('hvT').textContent=j.hvAir?(m+'m '+(s<10?'0':'')+s+'s / '+j.hvTmin+' min'):'on ground';"
@@ -1396,6 +1411,12 @@ void handleStatus() {
     j += ",\"osdkErr\":" + String(osdkSource.crcErrors());
     j += ",\"osdkFlag\":" + String(osdkSource.passFlag());
     j += ",\"osdkOk\":"  + String(osdkSource.hasFix() ? "true" : "false");
+    {
+        // Frames in the last second = the wire works, whatever the GPS says
+        const uint32_t lf = osdkSource.lastFrameMs();
+        j += ",\"osdkLink\":" + String(lf && millis() - lf < 1000 ? "true" : "false");
+        j += ",\"osdkHealth\":" + String(osdkSource.gpsHealth());
+    }
     j += ",\"osdkMis\":" + String(osdkSource.missionStatusFrames());
     j += ",\"osdkEvt\":" + String(osdkSource.missionEventFrames());
     j += ",\"osdkEnc\":" + String(osdkSource.encryptedFrames());
