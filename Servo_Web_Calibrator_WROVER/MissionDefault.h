@@ -59,11 +59,13 @@ const char MISSION_DEFAULT_JSON[] PROGMEM = R"json({
   },
   "hover": {
     "enabled": false,
-    "min_flight_min": 2.0,
+    "min_flight_min": 0.25,
     "min_height_m": 5.0,
+    "max_height_m": 15.0,
     "min_home_dist_m": 30.0,
-    "max_speed_mps": 2.0,
-    "hold_s": 3.0,
+    "max_speed_mps": 1.0,
+    "max_vspeed_mps": 1.0,
+    "hold_s": 5.0,
     "rearm_dist_m": 10.0,
     "takeoff_height_m": 3.0,
     "use_b": false

@@ -90,9 +90,15 @@ struct ReleaseConfig {
 //
 //   airborne for min_flight_min   (airborne = height above takeoff first
 //                                  reached takeoff_height_m)
-//   height  >= min_height_m       (never on the ground or while landing)
-//   home    >= min_home_dist_m    (never over the pilot, never during RTH)
+//   min_height_m <= height <= max_height_m
+//                                 (never on the ground, never from transit
+//                                  or RTH altitude)
+//   home    >= min_home_dist_m    (never over the pilot)
 //   OSDK speed <= max_speed_mps   (needs velocity health — no OSDK, no drop)
+//   |vertical speed| <= max_vspeed_mps
+//                                 (an RTH climb, a landing or a GS Pro
+//                                  altitude change is horizontally still too;
+//                                  abs() so the unverified vz sign is moot)
 //   position-derived speed agrees (second, independent source; see
 //                                  DropLogicEngine::POS_SPEED_TOL_MPS)
 //   moved >= rearm_dist_m since the last hover drop (one long hover must not
@@ -102,13 +108,19 @@ struct ReleaseConfig {
 // Edited from the dashboard (Waypoints tab -> HOVER RELEASE), persisted under
 // "hover" in mission.json. Absent block = disabled, so an older mission.json
 // keeps its waypoint behaviour.
+// Defaults are the 2026-10-30 GS Pro test: 5 drops on "hover" waypoint
+// actions at ~8 m. The flight clock is short because height, home distance and
+// vertical speed already rule out the takeoff climb, and a near plot can be
+// reached well inside 2 minutes. 15 s still outlasts the takeoff climb.
 struct HoverConfig {
     bool  enabled          = false;
-    float min_flight_min   = 2.0f;
+    float min_flight_min   = 0.25f;
     float min_height_m     = 5.0f;
+    float max_height_m     = 15.0f;
     float min_home_dist_m  = 30.0f;
-    float max_speed_mps    = 2.0f;
-    float hold_s           = 3.0f;
+    float max_speed_mps    = 1.0f;
+    float max_vspeed_mps   = 1.0f;
+    float hold_s           = 5.0f;
     float rearm_dist_m     = 10.0f;
     float takeoff_height_m = 3.0f;
     // Module B is uncalibrated as of 2026-10-29; a hover drop fires A only
@@ -119,6 +131,7 @@ struct HoverConfig {
     static constexpr float HEIGHT_MAX  = 120.0f;
     static constexpr float HOME_MAX    = 5000.0f;
     static constexpr float SPEED_MIN   = 0.1f,  SPEED_MAX = 15.0f;
+    static constexpr float VSPEED_MIN  = 0.1f,  VSPEED_MAX = 5.0f;
     static constexpr float HOLD_MAX    = 30.0f;
     static constexpr float REARM_MAX   = 1000.0f;
     static constexpr float TAKEOFF_MIN = 0.5f,  TAKEOFF_MAX = 20.0f;

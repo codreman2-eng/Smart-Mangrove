@@ -97,13 +97,15 @@ public:
         float    home_dist_m  = -1.0f;  // -1 = no home point yet
         float    speed_mps    = 0.0f;   // OSDK
         bool     speed_valid  = false;
+        float    vspeed_mps   = 0.0f;   // |vertical|, OSDK; valid with speed_valid
         float    pos_speed    = -1.0f;  // position-derived; -1 = not fresh
         float    rearm_m      = -1.0f;  // from last hover drop; -1 = none yet
         float    hold_s       = 0.0f;   // all-conditions time so far, armed
         uint8_t  drops        = 0;      // hover drops this boot
         // One bit per condition, for the dashboard checklist
         bool ok_time = false, ok_height = false, ok_home = false,
-             ok_speed = false, ok_agree = false, ok_rearm = false;
+             ok_speed = false, ok_agree = false, ok_rearm = false,
+             ok_vert = false;
     };
     const HoverInfo& hover() const { return _hover; }
     static const char* hoverName(Hover h);

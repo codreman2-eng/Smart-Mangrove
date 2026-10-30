@@ -28,9 +28,9 @@ void DropLogicEngine::update() {
             char ex[224];
             snprintf(ex, sizeof(ex),
                      "\"n\":%u,\"t\":%.0f,\"h\":%.1f,\"home\":%.1f,\"spd\":%.2f,"
-                     "\"pspd\":%.2f,\"rearm\":%.1f,\"hold\":%.1f,\"max\":%.1f",
+                     "\"vz\":%.2f,\"pspd\":%.2f,\"rearm\":%.1f,\"hold\":%.1f,\"max\":%.1f",
                      drop_id, h.flight_s, h.height_m, h.home_dist_m, h.speed_mps,
-                     h.pos_speed, h.rearm_m, h.hold_s,
+                     h.vspeed_mps, h.pos_speed, h.rearm_m, h.hold_s,
                      _cfg.config().hover.max_speed_mps);
             _log.logEvent("hover_release", ex);
         } else if (!_manual_pair) {
@@ -374,19 +374,21 @@ void DropLogicEngine::_updateHover(const Position& cur) {
                                                     cur.lat_deg, cur.lon_deg) : -1.0f;
     h.speed_valid  = cur.vel_valid;
     h.speed_mps    = cur.vel_valid ? cur.horizontalSpeed() : 0.0f;
+    h.vspeed_mps   = cur.vel_valid ? fabsf(cur.vd_mps) : 0.0f;
     const bool pos_fresh = _pos_speed_ms && (now - _pos_speed_ms) <= 2000;
     h.pos_speed    = pos_fresh ? _pos_speed : -1.0f;
     h.rearm_m      = _have_last_drop ? haversineDistance(_last_drop.lat_deg, _last_drop.lon_deg,
                                                          cur.lat_deg, cur.lon_deg) : -1.0f;
 
     h.ok_time   = h.airborne && h.flight_s >= hc.min_flight_min * 60.0f;
-    h.ok_height = h.height_m >= hc.min_height_m;
+    h.ok_height = h.height_m >= hc.min_height_m && h.height_m <= hc.max_height_m;
     h.ok_home   = _have_home && h.home_dist_m >= hc.min_home_dist_m;
     h.ok_speed  = h.speed_valid && h.speed_mps <= hc.max_speed_mps;
+    h.ok_vert   = h.speed_valid && h.vspeed_mps <= hc.max_vspeed_mps;
     h.ok_agree  = pos_fresh && _pos_speed <= hc.max_speed_mps + POS_SPEED_TOL_MPS;
     h.ok_rearm  = !_have_last_drop || h.rearm_m >= hc.rearm_dist_m;
     const bool all = h.ok_time && h.ok_height && h.ok_home &&
-                     h.ok_speed && h.ok_agree && h.ok_rearm;
+                     h.ok_speed && h.ok_vert && h.ok_agree && h.ok_rearm;
 
     // Like the waypoint dwell: the hold runs only ARMED and restarts on any
     // break, so arming mid-hover waits the full hold_s.
@@ -395,8 +397,9 @@ void DropLogicEngine::_updateHover(const Position& cur) {
     } else if (!_hold_start_ms) {
         _hold_start_ms = now ? now : 1;
         Serial.printf("[DLE] HOVER conditions met - holding %.1fs "
-                      "(h=%.1f home=%.0f v=%.1f pv=%.1f)\n",
-                      hc.hold_s, h.height_m, h.home_dist_m, h.speed_mps, _pos_speed);
+                      "(h=%.1f home=%.0f v=%.1f vz=%.1f pv=%.1f)\n",
+                      hc.hold_s, h.height_m, h.home_dist_m, h.speed_mps, h.vspeed_mps,
+                      _pos_speed);
     }
     const uint32_t held_ms = _hold_start_ms ? now - _hold_start_ms : 0;
     h.hold_s = held_ms / 1000.0f;
@@ -412,15 +415,17 @@ void DropLogicEngine::_updateHover(const Position& cur) {
     static uint32_t last_trace_ms = 0;
     if (now - last_trace_ms >= 1000) {
         last_trace_ms = now;
-        Serial.printf("[DLE] HOVER %s t=%.0fs h=%.1f home=%.0f v=%s pv=%s rearm=%s hold=%.1f "
-                      "[%c%c%c%c%c%c]\n",
+        Serial.printf("[DLE] HOVER %s t=%.0fs h=%.1f home=%.0f v=%s vz=%s pv=%s rearm=%s "
+                      "hold=%.1f [%c%c%c%c%c%c%c]\n",
                       hoverName(h.state), h.flight_s, h.height_m, h.home_dist_m,
                       h.speed_valid ? String(h.speed_mps, 1).c_str() : "none",
+                      h.speed_valid ? String(h.vspeed_mps, 1).c_str() : "none",
                       pos_fresh ? String(_pos_speed, 1).c_str() : "none",
                       _have_last_drop ? String(h.rearm_m, 0).c_str() : "-",
                       h.hold_s,
                       h.ok_time ? 'T' : 't', h.ok_height ? 'H' : 'h',
                       h.ok_home ? 'D' : 'd', h.ok_speed ? 'V' : 'v',
+                      h.ok_vert ? 'Z' : 'z',
                       h.ok_agree ? 'P' : 'p', h.ok_rearm ? 'R' : 'r');
     }
 

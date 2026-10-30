@@ -112,8 +112,10 @@ bool ConfigManager::_parse(const char* path) {
         h.enabled          = hv["enabled"]          | def.enabled;
         h.min_flight_min   = hv["min_flight_min"]   | def.min_flight_min;
         h.min_height_m     = hv["min_height_m"]     | def.min_height_m;
+        h.max_height_m     = hv["max_height_m"]     | def.max_height_m;
         h.min_home_dist_m  = hv["min_home_dist_m"]  | def.min_home_dist_m;
         h.max_speed_mps    = hv["max_speed_mps"]    | def.max_speed_mps;
+        h.max_vspeed_mps   = hv["max_vspeed_mps"]   | def.max_vspeed_mps;
         h.hold_s           = hv["hold_s"]           | def.hold_s;
         h.rearm_dist_m     = hv["rearm_dist_m"]     | def.rearm_dist_m;
         h.takeoff_height_m = hv["takeoff_height_m"] | def.takeoff_height_m;
@@ -181,8 +183,10 @@ bool ConfigManager::save() {
     hv["enabled"]          = _cfg.hover.enabled;
     hv["min_flight_min"]   = _cfg.hover.min_flight_min;
     hv["min_height_m"]     = _cfg.hover.min_height_m;
+    hv["max_height_m"]     = _cfg.hover.max_height_m;
     hv["min_home_dist_m"]  = _cfg.hover.min_home_dist_m;
     hv["max_speed_mps"]    = _cfg.hover.max_speed_mps;
+    hv["max_vspeed_mps"]   = _cfg.hover.max_vspeed_mps;
     hv["hold_s"]           = _cfg.hover.hold_s;
     hv["rearm_dist_m"]     = _cfg.hover.rearm_dist_m;
     hv["takeoff_height_m"] = _cfg.hover.takeoff_height_m;
@@ -257,8 +261,12 @@ void ConfigManager::setHover(const HoverConfig& h) {
     c.enabled          = h.enabled;
     c.min_flight_min   = clampf(h.min_flight_min,   0.0f, HoverConfig::FLIGHT_MAX);
     c.min_height_m     = clampf(h.min_height_m,     0.0f, HoverConfig::HEIGHT_MAX);
+    // Never below the minimum: an empty height window could never fire, and
+    // would look like an OSDK fault in the field rather than a typo.
+    c.max_height_m     = clampf(h.max_height_m,     c.min_height_m, HoverConfig::HEIGHT_MAX);
     c.min_home_dist_m  = clampf(h.min_home_dist_m,  0.0f, HoverConfig::HOME_MAX);
     c.max_speed_mps    = clampf(h.max_speed_mps,    HoverConfig::SPEED_MIN, HoverConfig::SPEED_MAX);
+    c.max_vspeed_mps   = clampf(h.max_vspeed_mps,   HoverConfig::VSPEED_MIN, HoverConfig::VSPEED_MAX);
     c.hold_s           = clampf(h.hold_s,           0.0f, HoverConfig::HOLD_MAX);
     c.rearm_dist_m     = clampf(h.rearm_dist_m,     0.0f, HoverConfig::REARM_MAX);
     c.takeoff_height_m = clampf(h.takeoff_height_m, HoverConfig::TAKEOFF_MIN, HoverConfig::TAKEOFF_MAX);
@@ -328,12 +336,12 @@ void ConfigManager::printSummary() const {
                   _cfg.release.max_speed_mps, _cfg.release.dwell_s,
                   _cfg.release.default_radius_m);
     const HoverConfig& h = _cfg.hover;
-    Serial.printf("  Hover mode  : %s  after %.1f min  h>=%.1f m  home>=%.0f m  "
-                  "speed<=%.1f m/s for %.1f s  rearm %.0f m  takeoff %.1f m  %s\n",
+    Serial.printf("  Hover mode  : %s  after %.2f min  h %.1f-%.1f m  home>=%.0f m  "
+                  "speed<=%.1f vert<=%.1f m/s for %.1f s  rearm %.0f m  takeoff %.1f m  %s\n",
                   h.enabled ? "ENABLED (waypoints ignored)" : "off",
-                  h.min_flight_min, h.min_height_m, h.min_home_dist_m,
-                  h.max_speed_mps, h.hold_s, h.rearm_dist_m, h.takeoff_height_m,
-                  h.use_b ? "A+B" : "A only");
+                  h.min_flight_min, h.min_height_m, h.max_height_m, h.min_home_dist_m,
+                  h.max_speed_mps, h.max_vspeed_mps, h.hold_s, h.rearm_dist_m,
+                  h.takeoff_height_m, h.use_b ? "A+B" : "A only");
     Serial.printf("  Drop points : %d\n", _cfg.drop_count);
     for (uint8_t i = 0; i < _cfg.drop_count; i++) {
         const DropPoint& dp = _cfg.drops[i];

@@ -313,24 +313,28 @@ static const char HTML_WP[] =
 "<label style='font-size:.75rem;color:#e5e7eb;display:flex;align-items:center;gap:6px;margin-bottom:8px'>"
 "<input type='checkbox' id='hvEn'> <b>Hover mode ON</b> &nbsp;<span style='color:#6b7280'>(waypoints are ignored while on)</span></label>"
 "<div class='ref-row'>"
-"<div><label>After flight (min)</label><input type='number' id='hvMin' value='2' min='0' max='60' step='0.5'></div>"
+"<div><label>After flight (min)</label><input type='number' id='hvMin' value='0.25' min='0' max='60' step='0.25'></div>"
 "<div><label>Min height (m)</label><input type='number' id='hvHmin' value='5' min='0' max='120' step='0.5'></div>"
+"<div><label>Max height (m)</label><input type='number' id='hvHmax' value='15' min='0' max='120' step='0.5'></div>"
+"</div><div class='ref-row'>"
+"<div><label>Max speed (m/s)</label><input type='number' id='hvSpd' value='1.0' min='0.1' max='15' step='0.1'></div>"
+"<div><label>Max vertical (m/s)</label><input type='number' id='hvVzMax' value='1.0' min='0.1' max='5' step='0.1'></div>"
+"<div><label>Hold (s)</label><input type='number' id='hvHoldS' value='5' min='0' max='30' step='0.5'></div>"
+"</div><div class='ref-row'>"
 "<div><label>Min from takeoff (m)</label><input type='number' id='hvHome' value='30' min='0' max='5000' step='1'></div>"
-"</div><div class='ref-row'>"
-"<div><label>Max speed (m/s)</label><input type='number' id='hvSpd' value='2.0' min='0.1' max='15' step='0.1'></div>"
-"<div><label>Hold (s)</label><input type='number' id='hvHoldS' value='3' min='0' max='30' step='0.5'></div>"
 "<div><label>Move between drops (m)</label><input type='number' id='hvRearm' value='10' min='0' max='1000' step='1'></div>"
-"</div><div class='ref-row'>"
 "<div><label>Takeoff height (m)</label><input type='number' id='hvToh' value='3' min='0.5' max='20' step='0.5'></div>"
+"</div><div class='ref-row'>"
 "<div><label>&nbsp;</label><label style='display:flex;align-items:center;gap:6px;color:#e5e7eb'>"
 "<input type='checkbox' id='hvB'> Also fire module B</label></div>"
 "</div>"
 "<button class='b-o' style='width:100%;margin-top:8px' onclick='hvApply()'>&#128190; Apply + Save</button>"
 "<div style='font-size:.66rem;color:#6b7280;margin-top:8px;line-height:1.6'>"
 "While <b>armed</b>, fires module A when <b>all</b> hold together for <b>Hold</b> seconds: airborne at least "
-"<b>After flight</b> minutes (the clock starts when height passes <b>Takeoff height</b>), height at or above "
-"<b>Min height</b>, at least <b>Min from takeoff</b> metres from where it took off, OSDK speed at or below "
-"<b>Max speed</b> and the speed worked out from position agreeing (within 1 m/s), and at least "
+"<b>After flight</b> minutes (the clock starts when height passes <b>Takeoff height</b>), height between "
+"<b>Min height</b> and <b>Max height</b>, at least <b>Min from takeoff</b> metres from where it took off, OSDK "
+"speed at or below <b>Max speed</b>, climbing or descending no faster than <b>Max vertical</b> (so an RTH climb "
+"or a landing never fires), the speed worked out from position agreeing (within 1 m/s), and at least "
 "<b>Move between drops</b> metres from the last hover drop. Needs DJI OSDK height and velocity &#8212; "
 "without them it never fires. Blocked while armed."
 "</div></div>"
@@ -364,6 +368,7 @@ static const char HTML_MISSION[] =
 "<div class='kv'><span id='hvHk'>&#9675;</span> Height above takeoff: <b id='hvH'>--</b></div>"
 "<div class='kv'><span id='hvDk'>&#9675;</span> Distance from takeoff: <b id='hvD'>--</b></div>"
 "<div class='kv'><span id='hvVk'>&#9675;</span> Speed (OSDK): <b id='hvV'>--</b></div>"
+"<div class='kv'><span id='hvZk'>&#9675;</span> Vertical speed (OSDK): <b id='hvZ'>--</b></div>"
 "<div class='kv'><span id='hvPk'>&#9675;</span> Speed (from position): <b id='hvP'>--</b></div>"
 "<div class='kv'><span id='hvRk'>&#9675;</span> Moved since last drop: <b id='hvR'>--</b></div>"
 "<div class='kv'>Hover drops: <b id='hvN'>0</b></div>"
@@ -743,8 +748,8 @@ static const char HTML3[] =
 "log('Release saved: speed<='+j.spd+' m/s dwell='+j.dwell+' s default r='+j.defr+' m','#4ade80');}catch(e){}}"
 // --- Hover release settings ---
 "let hvLoaded=false;"
-"const HV_F=[['hvMin','min',0,60],['hvHmin','h',0,120],['hvHome','home',0,5000],"
-"['hvSpd','spd',0.1,15],['hvHoldS','hold',0,30],['hvRearm','rearm',0,1000],['hvToh','toh',0.5,20]];"
+"const HV_F=[['hvMin','min',0,60],['hvHmin','h',0,120],['hvHmax','hmax',0,120],['hvHome','home',0,5000],"
+"['hvSpd','spd',0.1,15],['hvVzMax','vz',0.1,5],['hvHoldS','hold',0,30],['hvRearm','rearm',0,1000],['hvToh','toh',0.5,20]];"
 "function hvFill(h){document.getElementById('hvEn').checked=!!h.en;document.getElementById('hvB').checked=!!h.b;"
 "for(const f of HV_F)document.getElementById(f[0]).value=h[f[1]];}"
 "async function hvApply(){"
@@ -754,7 +759,7 @@ static const char HTML3[] =
 "const r=await doFetch(q+'&save=1');"
 "if(!r||!r.ok)return;"
 "try{const h=await r.json();hvFill(h);"
-"const s=h.en?('Hover ON: after '+h.min+' min, h>='+h.h+' m, '+h.home+' m out, <='+h.spd+' m/s for '+h.hold+' s'):'Hover mode OFF - waypoints fire';"
+"const s=h.en?('Hover ON: after '+h.min+' min, h '+h.h+'-'+h.hmax+' m, '+h.home+' m out, <='+h.spd+' m/s, vert <='+h.vz+' m/s for '+h.hold+' s'):'Hover mode OFF - waypoints fire';"
 "toast(s,false);log(s,'#4ade80');}catch(e){}}"
 "async function wpRadiusAll(){"
 "const R=relNum('relR',0.5,100);if(R===null){toast('Radius must be 0.5-100 m',true);return;}"
@@ -801,15 +806,16 @@ static const char HTML3[] =
 "const ck=(id,ok)=>{const e=document.getElementById(id);e.innerHTML=ok?'&#10003;':'&#10007;';e.style.color=ok?'#4ade80':'#f87171';};"
 "const m=Math.floor(j.hvT/60),s=Math.floor(j.hvT%60);"
 "document.getElementById('hvT').textContent=j.hvAir?(m+'m '+(s<10?'0':'')+s+'s / '+j.hvTmin+' min'):'on ground';"
-"document.getElementById('hvH').textContent=j.hvHok?(j.hvH.toFixed(1)+' / '+j.hvHmin+' m'):'no OSDK height';"
+"document.getElementById('hvH').textContent=j.hvHok?(j.hvH.toFixed(1)+' m ('+j.hvHmin+'-'+j.hvHmax+')'):'no OSDK height';"
 "document.getElementById('hvD').textContent=j.hvD<0?'no takeoff point':(j.hvD.toFixed(0)+' / '+j.hvDmin+' m');"
 "document.getElementById('hvV').textContent=j.hvVok?(j.hvV.toFixed(1)+' / '+j.hvMax+' m/s'):'no OSDK velocity';"
+"document.getElementById('hvZ').textContent=j.hvVok?(j.hvVz.toFixed(1)+' / '+j.hvVzMax+' m/s'):'no OSDK velocity';"
 "document.getElementById('hvP').textContent=j.hvP<0?'--':(j.hvP.toFixed(1)+' m/s');"
 "document.getElementById('hvR').textContent=j.hvR<0?'no drop yet':(j.hvR.toFixed(0)+' / '+j.hvRmin+' m');"
 "document.getElementById('hvN').textContent=j.hvN;"
 "document.getElementById('hvHold').textContent=j.hvSt==='HOLDING'?('hold '+j.hvHold.toFixed(1)+' / '+j.hvHoldSet+' s'):"
 "j.hvSt==='READY'?'all met - ARM to fire':'--';"
-"const c=j.hvOk;ck('hvTk',c&1);ck('hvHk',c&2);ck('hvDk',c&4);ck('hvVk',c&8);ck('hvPk',c&16);ck('hvRk',c&32);}}"
+"const c=j.hvOk;ck('hvTk',c&1);ck('hvHk',c&2);ck('hvDk',c&4);ck('hvVk',c&8);ck('hvPk',c&16);ck('hvRk',c&32);ck('hvZk',c&64);}}"
 "if(j.osdkMis!==undefined){"
 "document.getElementById('djMis').textContent=j.osdkMis;"
 "document.getElementById('djEvt').textContent=j.osdkEvt;"
@@ -1124,10 +1130,12 @@ void handleRelease() {
 static String hoverJson() {
     const HoverConfig& h = cfg.config().hover;
     return String("{\"en\":") + (h.enabled ? "true" : "false") +
-           ",\"min\":"   + String(h.min_flight_min, 1) +
+           ",\"min\":"   + String(h.min_flight_min, 2) +
            ",\"h\":"     + String(h.min_height_m, 1) +
+           ",\"hmax\":"  + String(h.max_height_m, 1) +
            ",\"home\":"  + String(h.min_home_dist_m, 0) +
            ",\"spd\":"   + String(h.max_speed_mps, 1) +
+           ",\"vz\":"    + String(h.max_vspeed_mps, 1) +
            ",\"hold\":"  + String(h.hold_s, 1) +
            ",\"rearm\":" + String(h.rearm_dist_m, 0) +
            ",\"toh\":"   + String(h.takeoff_height_m, 1) +
@@ -1138,23 +1146,25 @@ static String hoverJson() {
 // is only knowable afterwards from the flight log.
 static void logHoverChange(const char* via) {
     const HoverConfig& h = cfg.config().hover;
-    char ex[200];
+    char ex[240];
     snprintf(ex, sizeof(ex),
-             "\"via\":\"%s\",\"en\":%s,\"min\":%.1f,\"h\":%.1f,\"home\":%.0f,"
-             "\"spd\":%.1f,\"hold\":%.1f,\"rearm\":%.0f,\"toh\":%.1f,\"b\":%s",
+             "\"via\":\"%s\",\"en\":%s,\"min\":%.2f,\"h\":%.1f,\"hmax\":%.1f,"
+             "\"home\":%.0f,\"spd\":%.1f,\"vz\":%.1f,\"hold\":%.1f,\"rearm\":%.0f,"
+             "\"toh\":%.1f,\"b\":%s",
              via, h.enabled ? "true" : "false", h.min_flight_min, h.min_height_m,
-             h.min_home_dist_m, h.max_speed_mps, h.hold_s, h.rearm_dist_m,
-             h.takeoff_height_m, h.use_b ? "true" : "false");
+             h.max_height_m, h.min_home_dist_m, h.max_speed_mps, h.max_vspeed_mps,
+             h.hold_s, h.rearm_dist_m, h.takeoff_height_m, h.use_b ? "true" : "false");
     logger.logEvent("hover_cfg", ex);
 }
 
 // Waypoints tab -> HOVER RELEASE.
 //   /hover                                         current values as JSON
-//   /hover?en=1&min=2&h=5&home=30&spd=2&hold=3&rearm=10&toh=3&b=0[&save=1]
+//   /hover?en=1&min=0.25&h=5&hmax=15&home=30&spd=1&vz=1&hold=5&rearm=10&toh=3&b=0[&save=1]
 // Any argument may be omitted and keeps its current value. Answers with what
 // was actually stored (clamped).
 void handleHover() {
-    static const char* const KEYS[] = {"en", "min", "h", "home", "spd", "hold", "rearm", "toh", "b"};
+    static const char* const KEYS[] = {"en", "min", "h", "hmax", "home", "spd", "vz",
+                                       "hold", "rearm", "toh", "b"};
     bool mutate = false;
     for (const char* k : KEYS) mutate |= server.hasArg(k);
     if (mutate) {
@@ -1169,8 +1179,10 @@ void handleHover() {
         if (server.hasArg("b"))  h.use_b   = server.arg("b")  == "1";
         h.min_flight_min   = f("min",   h.min_flight_min);
         h.min_height_m     = f("h",     h.min_height_m);
+        h.max_height_m     = f("hmax",  h.max_height_m);
         h.min_home_dist_m  = f("home",  h.min_home_dist_m);
         h.max_speed_mps    = f("spd",   h.max_speed_mps);
+        h.max_vspeed_mps   = f("vz",    h.max_vspeed_mps);
         h.hold_s           = f("hold",  h.hold_s);
         h.rearm_dist_m     = f("rearm", h.rearm_dist_m);
         h.takeoff_height_m = f("toh",   h.takeoff_height_m);
@@ -1341,20 +1353,24 @@ void handleStatus() {
         const DropLogicEngine::HoverInfo& h = engine->hover();
         const HoverConfig& hc = mc.hover;
         const uint8_t ok = (h.ok_time  ? 1 : 0)  | (h.ok_height ? 2 : 0)  | (h.ok_home  ? 4 : 0) |
-                           (h.ok_speed ? 8 : 0)  | (h.ok_agree  ? 16 : 0) | (h.ok_rearm ? 32 : 0);
+                           (h.ok_speed ? 8 : 0)  | (h.ok_agree  ? 16 : 0) | (h.ok_rearm ? 32 : 0) |
+                           (h.ok_vert  ? 64 : 0);
         j += ",\"hvOn\":true";
         j += ",\"hvSt\":\""   + String(DropLogicEngine::hoverName(h.state)) + "\"";
         j += ",\"hvAir\":"    + String(h.airborne ? "true" : "false");
         j += ",\"hvT\":"      + String(h.flight_s, 0);
-        j += ",\"hvTmin\":"   + String(hc.min_flight_min, 1);
+        j += ",\"hvTmin\":"   + String(hc.min_flight_min, 2);
         j += ",\"hvH\":"      + String(h.height_m, 1);
         j += ",\"hvHok\":"    + String(h.height_valid ? "true" : "false");
         j += ",\"hvHmin\":"   + String(hc.min_height_m, 1);
+        j += ",\"hvHmax\":"   + String(hc.max_height_m, 1);
         j += ",\"hvD\":"      + String(h.home_dist_m, 1);
         j += ",\"hvDmin\":"   + String(hc.min_home_dist_m, 0);
         j += ",\"hvV\":"      + String(h.speed_mps, 1);
         j += ",\"hvVok\":"    + String(h.speed_valid ? "true" : "false");
         j += ",\"hvMax\":"    + String(hc.max_speed_mps, 1);
+        j += ",\"hvVz\":"     + String(h.vspeed_mps, 1);
+        j += ",\"hvVzMax\":"  + String(hc.max_vspeed_mps, 1);
         j += ",\"hvP\":"      + String(h.pos_speed, 1);
         j += ",\"hvR\":"      + String(h.rearm_m, 1);
         j += ",\"hvRmin\":"   + String(hc.rearm_dist_m, 0);
@@ -1428,8 +1444,8 @@ static void handleSerialLine(String s) {
                          "wpradius <idx|all> <r> | wpclear | wpsave"));
         Serial.println(F("  bench (SIM only): rel <max_mps> <dwell_s> [default_r] | "
                          "simvel <vn> <ve> [height_m]"));
-        Serial.println(F("  bench (SIM only): hover en=1 min=2 h=5 home=30 spd=2 hold=3 "
-                         "rearm=10 toh=3 b=0 [save]"));
+        Serial.println(F("  bench (SIM only): hover en=1 min=0.25 h=5 hmax=15 home=30 spd=1 "
+                         "vz=1 hold=5 rearm=10 toh=3 b=0 [save]"));
         Serial.println(F("  bench (SIM only): balltest — impact-predictor self-test"));
 #endif
         return;
@@ -1507,7 +1523,7 @@ static void handleSerialLine(String s) {
     // Hover release mode. Printing works in every build; setting is SIM-only,
     // like `rel`: in a flight build it is the dashboard's job.
     //   hover                              config + live conditions
-    //   hover en=1 min=2 h=5 home=30 spd=2 hold=3 rearm=10 toh=3 b=0 [save]
+    //   hover en=1 min=0.25 h=5 hmax=15 home=30 spd=1 vz=1 hold=5 rearm=10 toh=3 b=0 [save]
     if (cmd == "hover") {
         rest.trim();
 #if SIM_MODE
@@ -1530,8 +1546,10 @@ static void handleSerialLine(String s) {
                 else if (k == "b")     h.use_b            = v != 0.0f;
                 else if (k == "min")   h.min_flight_min   = v;
                 else if (k == "h")     h.min_height_m     = v;
+                else if (k == "hmax")  h.max_height_m     = v;
                 else if (k == "home")  h.min_home_dist_m  = v;
                 else if (k == "spd")   h.max_speed_mps    = v;
+                else if (k == "vz")    h.max_vspeed_mps   = v;
                 else if (k == "hold")  h.hold_s           = v;
                 else if (k == "rearm") h.rearm_dist_m     = v;
                 else if (k == "toh")   h.takeoff_height_m = v;
@@ -1549,13 +1567,15 @@ static void handleSerialLine(String s) {
         Serial.println("hover: " + hoverJson());
         if (engine && cfg.config().hover.enabled) {
             const DropLogicEngine::HoverInfo& h = engine->hover();
-            Serial.printf("  state=%s airborne=%d t=%.0fs h=%.1f%s home=%.1f v=%.1f%s pv=%.1f "
-                          "rearm=%.1f hold=%.1f drops=%u ok[T%d H%d D%d V%d P%d R%d]\n",
+            Serial.printf("  state=%s airborne=%d t=%.0fs h=%.1f%s home=%.1f v=%.1f%s vz=%.1f "
+                          "pv=%.1f rearm=%.1f hold=%.1f drops=%u "
+                          "ok[T%d H%d D%d V%d Z%d P%d R%d]\n",
                           DropLogicEngine::hoverName(h.state), h.airborne, h.flight_s,
                           h.height_m, h.height_valid ? "" : "(none)", h.home_dist_m,
-                          h.speed_mps, h.speed_valid ? "" : "(none)", h.pos_speed,
-                          h.rearm_m, h.hold_s, h.drops,
-                          h.ok_time, h.ok_height, h.ok_home, h.ok_speed, h.ok_agree, h.ok_rearm);
+                          h.speed_mps, h.speed_valid ? "" : "(none)", h.vspeed_mps,
+                          h.pos_speed, h.rearm_m, h.hold_s, h.drops,
+                          h.ok_time, h.ok_height, h.ok_home, h.ok_speed, h.ok_vert,
+                          h.ok_agree, h.ok_rearm);
         }
         return;
     }
