@@ -136,6 +136,17 @@ RcPwmInput rcIn(PIN_RC_IN);
 // state LED both reported ARMED for the whole manual drop window. Tracked
 // here so the yellow WAIT LED and the reported state are truthful.
 static bool manualDropActive = false;
+// What the aircraft was doing when DROP A/B was pressed, for the log row
+// written when the door finishes. Until 2026-10-31 manual drops left no row
+// at all: 5 door openings in that day's log could only be inferred from
+// state changes, 3 of them in flight at 1.5-1.7 m/s.
+static Position manualDropPos;
+static uint8_t  manualDropMod = 0;     // 0 = A, 1 = B
+
+// A mission-status push older than this means the mission is not running
+// (the A3 stops sending them when a mission ends). Fail-safe: a stale or
+// missing push can only hold a drop back, never cause one.
+#define DJI_MISSION_STALE_MS 3000
 
 // ─── Flight logging ────────────────────────────────────────────────────
 // 1 Hz periodic telemetry plus event rows on change. At ~150 bytes/row this
@@ -327,6 +338,8 @@ static const char HTML_WP[] =
 "</div><div class='ref-row'>"
 "<div><label>&nbsp;</label><label style='display:flex;align-items:center;gap:6px;color:#e5e7eb'>"
 "<input type='checkbox' id='hvB'> Also fire module B</label></div>"
+"<div><label>&nbsp;</label><label style='display:flex;align-items:center;gap:6px;color:#e5e7eb'>"
+"<input type='checkbox' id='hvMis'> Only during the DJI mission</label></div>"
 "</div>"
 "<button class='b-o' style='width:100%;margin-top:8px' onclick='hvApply()'>&#128190; Apply + Save</button>"
 "<div style='font-size:.66rem;color:#6b7280;margin-top:8px;line-height:1.6'>"
@@ -335,7 +348,9 @@ static const char HTML_WP[] =
 "<b>Min height</b> and <b>Max height</b>, at least <b>Min from takeoff</b> metres from where it took off, OSDK "
 "speed at or below <b>Max speed</b>, climbing or descending no faster than <b>Max vertical</b> (so an RTH climb "
 "or a landing never fires), the speed worked out from position agreeing (within 1 m/s), and at least "
-"<b>Move between drops</b> metres from the last hover drop. Needs DJI OSDK height and velocity &#8212; "
+"<b>Move between drops</b> metres from the last hover drop. With <b>Only during the DJI mission</b> it also "
+"needs the A3 to report a GS Pro waypoint mission running, so stops after the mission ends never fire. "
+"Needs DJI OSDK height and velocity &#8212; "
 "without them it never fires. Blocked while armed."
 "</div></div>"
 "</div>";
@@ -372,6 +387,7 @@ static const char HTML_MISSION[] =
 "<div class='kv'><span id='hvZk'>&#9675;</span> Vertical speed (OSDK): <b id='hvZ'>--</b></div>"
 "<div class='kv'><span id='hvPk'>&#9675;</span> Speed (from position): <b id='hvP'>--</b></div>"
 "<div class='kv'><span id='hvRk'>&#9675;</span> Moved since last drop: <b id='hvR'>--</b></div>"
+"<div class='kv' id='hvMrow' style='display:none'><span id='hvMk'>&#9675;</span> DJI mission running: <b id='hvM'>--</b></div>"
 "<div class='kv'>Hover drops: <b id='hvN'>0</b></div>"
 "</div>"
 "<div class='card' id='apCard' style='margin-bottom:12px;text-align:center'><h2>APPROACH</h2>"
@@ -764,10 +780,10 @@ static const char HTML3[] =
 "let hvLoaded=false;"
 "const HV_F=[['hvMin','min',0,60],['hvHmin','h',0,120],['hvHmax','hmax',0,120],['hvHome','home',0,5000],"
 "['hvSpd','spd',0.1,15],['hvVzMax','vz',0.1,5],['hvHoldS','hold',0,30],['hvRearm','rearm',0,1000],['hvToh','toh',0.5,20]];"
-"function hvFill(h){document.getElementById('hvEn').checked=!!h.en;document.getElementById('hvB').checked=!!h.b;"
+"function hvFill(h){document.getElementById('hvEn').checked=!!h.en;document.getElementById('hvB').checked=!!h.b;document.getElementById('hvMis').checked=!!h.mis;"
 "for(const f of HV_F)document.getElementById(f[0]).value=h[f[1]];}"
 "async function hvApply(){"
-"let q='/hover?en='+(document.getElementById('hvEn').checked?1:0)+'&b='+(document.getElementById('hvB').checked?1:0);"
+"let q='/hover?en='+(document.getElementById('hvEn').checked?1:0)+'&b='+(document.getElementById('hvB').checked?1:0)+'&mis='+(document.getElementById('hvMis').checked?1:0);"
 "for(const f of HV_F){const v=relNum(f[0],f[2],f[3]);"
 "if(v===null){toast(f[0]+': must be '+f[2]+'-'+f[3],true);return;}q+='&'+f[1]+'='+v;}"
 "const r=await doFetch(q+'&save=1');"
@@ -847,7 +863,9 @@ static const char HTML3[] =
 "document.getElementById('hvN').textContent=j.hvN;"
 "document.getElementById('hvHold').textContent=j.hvSt==='HOLDING'?('hold '+j.hvHold.toFixed(1)+' / '+j.hvHoldSet+' s'):"
 "j.hvSt==='READY'?'all met - ARM to fire':'--';"
-"const c=j.hvOk;ck('hvTk',c&1);ck('hvHk',c&2);ck('hvDk',c&4);ck('hvVk',c&8);ck('hvPk',c&16);ck('hvRk',c&32);ck('hvZk',c&64);}}"
+"const c=j.hvOk;ck('hvTk',c&1);ck('hvHk',c&2);ck('hvDk',c&4);ck('hvVk',c&8);ck('hvPk',c&16);ck('hvRk',c&32);ck('hvZk',c&64);"
+"document.getElementById('hvMrow').style.display=j.hvMisOn?'':'none';"
+"if(j.hvMisOn){ck('hvMk',c&128);document.getElementById('hvM').textContent=(c&128)?'yes (GS Pro)':'no - mission not running';}}}"
 "if(j.osdkMis!==undefined){"
 "document.getElementById('djMis').textContent=j.osdkMis;"
 "document.getElementById('djEvt').textContent=j.osdkEvt;"
@@ -996,8 +1014,14 @@ void handleDropA() {
     }
     if (!sm.isArmed()) { server.send(409, "text/plain", "not armed"); return; }
     if (engine && engine->isBusy()) { server.send(409, "text/plain", "auto sequence in progress"); return; }
+    // Snapshot BEFORE the drive starts: no flash write happens here, the row
+    // is written once the door has finished (see loop()).
+    Position p = posSource->read();
     bool started = modA.startDrop();
-    if (started) { sm.setDropping(true); manualDropActive = true; }
+    if (started) {
+        sm.setDropping(true); manualDropActive = true;
+        manualDropPos = p; manualDropMod = 0;
+    }
     server.send(started ? 200 : 409, "text/plain", started ? "ok" : "cannot start");
 }
 
@@ -1007,9 +1031,42 @@ void handleDropB() {
     }
     if (!sm.isArmed()) { server.send(409, "text/plain", "not armed"); return; }
     if (engine && engine->isBusy()) { server.send(409, "text/plain", "auto sequence in progress"); return; }
+    Position p = posSource->read();
     bool started = modB.startDrop();
-    if (started) { sm.setDropping(true); manualDropActive = true; }
+    if (started) {
+        sm.setDropping(true); manualDropActive = true;
+        manualDropPos = p; manualDropMod = 1;
+    }
     server.send(started ? 200 : 409, "text/plain", started ? "ok" : "cannot start");
+}
+
+// A manual DROP A/B has finished: a context row (what the aircraft was doing
+// at the press) and a drop row with id 0, as a pilot RC pair logs. Called
+// from loop() once the door is done, outside the drive window, so the flash
+// write cannot stretch it.
+static void logManualDrop() {
+    ActuatorModule& m = manualDropMod ? modB : modA;
+    const Position& p = manualDropPos;
+    const char* res = DropLogicEngine::resultName(m.lastResult());
+    char ex[160];
+    snprintf(ex, sizeof(ex),
+             "\"via\":\"http\",\"mod\":\"%c\",\"door\":%u,\"h\":%.1f,\"spd\":%.2f,\"res\":\"%s\"",
+             manualDropMod ? 'B' : 'A', m.doorsDropped(),
+             p.height_valid ? p.height_m : -1.0f,
+             p.vel_valid ? p.horizontalSpeed() : -1.0f, res);
+    logger.logEvent("manual_drop", ex);
+
+    DropEvent evt;
+    evt.timestamp_ms = millis();
+    evt.drop_id      = 0;
+    evt.module       = manualDropMod;
+    evt.door_num     = m.doorsDropped();
+    evt.lat_deg      = p.lat_deg;
+    evt.lon_deg      = p.lon_deg;
+    evt.alt_m        = p.alt_m;
+    evt.success      = m.lastResult() == DropResult::OK;
+    strncpy(evt.result_str, res, sizeof(evt.result_str));
+    logger.logDrop(evt);
 }
 
 // Rack reloaded -> door counters back to 0 (Control tab RESET DOOR COUNT).
@@ -1195,7 +1252,8 @@ static String hoverJson() {
            ",\"hold\":"  + String(h.hold_s, 1) +
            ",\"rearm\":" + String(h.rearm_dist_m, 0) +
            ",\"toh\":"   + String(h.takeoff_height_m, 1) +
-           ",\"b\":"     + (h.use_b ? "true" : "false") + "}";
+           ",\"b\":"     + (h.use_b ? "true" : "false") +
+           ",\"mis\":"   + (h.need_mission ? "true" : "false") + "}";
 }
 
 // Like logReleaseChange(): what hover mode was set to when a drop happened
@@ -1206,10 +1264,11 @@ static void logHoverChange(const char* via) {
     snprintf(ex, sizeof(ex),
              "\"via\":\"%s\",\"en\":%s,\"min\":%.2f,\"h\":%.1f,\"hmax\":%.1f,"
              "\"home\":%.0f,\"spd\":%.1f,\"vz\":%.1f,\"hold\":%.1f,\"rearm\":%.0f,"
-             "\"toh\":%.1f,\"b\":%s",
+             "\"toh\":%.1f,\"b\":%s,\"mis\":%s",
              via, h.enabled ? "true" : "false", h.min_flight_min, h.min_height_m,
              h.max_height_m, h.min_home_dist_m, h.max_speed_mps, h.max_vspeed_mps,
-             h.hold_s, h.rearm_dist_m, h.takeoff_height_m, h.use_b ? "true" : "false");
+             h.hold_s, h.rearm_dist_m, h.takeoff_height_m, h.use_b ? "true" : "false",
+             h.need_mission ? "true" : "false");
     logger.logEvent("hover_cfg", ex);
 }
 
@@ -1220,7 +1279,7 @@ static void logHoverChange(const char* via) {
 // was actually stored (clamped).
 void handleHover() {
     static const char* const KEYS[] = {"en", "min", "h", "hmax", "home", "spd", "vz",
-                                       "hold", "rearm", "toh", "b"};
+                                       "hold", "rearm", "toh", "b", "mis"};
     bool mutate = false;
     for (const char* k : KEYS) mutate |= server.hasArg(k);
     if (mutate) {
@@ -1233,6 +1292,7 @@ void handleHover() {
         };
         if (server.hasArg("en")) h.enabled = server.arg("en") == "1";
         if (server.hasArg("b"))  h.use_b   = server.arg("b")  == "1";
+        if (server.hasArg("mis")) h.need_mission = server.arg("mis") == "1";
         h.min_flight_min   = f("min",   h.min_flight_min);
         h.min_height_m     = f("h",     h.min_height_m);
         h.max_height_m     = f("hmax",  h.max_height_m);
@@ -1410,7 +1470,7 @@ void handleStatus() {
         const HoverConfig& hc = mc.hover;
         const uint8_t ok = (h.ok_time  ? 1 : 0)  | (h.ok_height ? 2 : 0)  | (h.ok_home  ? 4 : 0) |
                            (h.ok_speed ? 8 : 0)  | (h.ok_agree  ? 16 : 0) | (h.ok_rearm ? 32 : 0) |
-                           (h.ok_vert  ? 64 : 0);
+                           (h.ok_vert  ? 64 : 0) | (h.ok_mission ? 128 : 0);
         j += ",\"hvOn\":true";
         j += ",\"hvSt\":\""   + String(DropLogicEngine::hoverName(h.state)) + "\"";
         j += ",\"hvAir\":"    + String(h.airborne ? "true" : "false");
@@ -1434,6 +1494,7 @@ void handleStatus() {
         j += ",\"hvHoldSet\":" + String(hc.hold_s, 1);
         j += ",\"hvN\":"      + String(h.drops);
         j += ",\"hvOk\":"     + String(ok);
+        j += ",\"hvMisOn\":"  + String(hc.need_mission ? "true" : "false");
     }
     // RC pilot trigger — live values feed the Calibration tab's RC card
     j += ",\"rcEn\":"   + String(rcIn.enabled() ? "true" : "false");
@@ -1507,7 +1568,7 @@ static void handleSerialLine(String s) {
         Serial.println(F("  bench (SIM only): rel <max_mps> <dwell_s> [default_r] | "
                          "simvel <vn> <ve> [height_m]"));
         Serial.println(F("  bench (SIM only): hover en=1 min=0.25 h=5 hmax=15 home=30 spd=1 "
-                         "vz=1 hold=5 rearm=10 toh=3 b=0 [save]"));
+                         "vz=1 hold=5 rearm=10 toh=3 b=0 mis=0 [save]"));
         Serial.println(F("  bench (SIM only): balltest — impact-predictor self-test"));
 #endif
         return;
@@ -1611,6 +1672,7 @@ static void handleSerialLine(String s) {
                 float  v = tok.substring(eq + 1).toFloat();
                 if      (k == "en")    h.enabled          = v != 0.0f;
                 else if (k == "b")     h.use_b            = v != 0.0f;
+                else if (k == "mis")   h.need_mission     = v != 0.0f;
                 else if (k == "min")   h.min_flight_min   = v;
                 else if (k == "h")     h.min_height_m     = v;
                 else if (k == "hmax")  h.max_height_m     = v;
@@ -1636,13 +1698,13 @@ static void handleSerialLine(String s) {
             const DropLogicEngine::HoverInfo& h = engine->hover();
             Serial.printf("  state=%s airborne=%d t=%.0fs h=%.1f%s home=%.1f v=%.1f%s vz=%.1f "
                           "pv=%.1f rearm=%.1f hold=%.1f drops=%u "
-                          "ok[T%d H%d D%d V%d Z%d P%d R%d]\n",
+                          "ok[T%d H%d D%d V%d Z%d P%d R%d M%d]\n",
                           DropLogicEngine::hoverName(h.state), h.airborne, h.flight_s,
                           h.height_m, h.height_valid ? "" : "(none)", h.home_dist_m,
                           h.speed_mps, h.speed_valid ? "" : "(none)", h.vspeed_mps,
                           h.pos_speed, h.rearm_m, h.hold_s, h.drops,
                           h.ok_time, h.ok_height, h.ok_home, h.ok_speed, h.ok_vert,
-                          h.ok_agree, h.ok_rearm);
+                          h.ok_agree, h.ok_rearm, h.ok_mission);
         }
         return;
     }
@@ -1994,6 +2056,12 @@ void loop() {
     posSource->update();
     sectMark(SECT_POS);
 
+    // GS Pro mission running? Only consulted when hover.need_mission is set.
+    if (engine) {
+        const OsdkPositionSource::MissionLast& ms = osdkSource.lastMissionStatus();
+        engine->setDjiMission(ms.ms && millis() - ms.ms <= DJI_MISSION_STALE_MS && ms.a == 1);
+    }
+
     // Door-drop polling — MUST run before engine->update() so it sees
     // isDropping() already transitioned to false on completion this tick.
     modA.poll();
@@ -2038,6 +2106,7 @@ void loop() {
         && !(engine && engine->isBusy())) {
         sm.setDropping(false);
         manualDropActive = false;
+        logManualDrop();
     }
 
     // GPS stability tracking (informational — dashboard ARM has no gate,
@@ -2110,7 +2179,11 @@ void loop() {
     // Idle drops to 1/10 Hz: a bench session left running for hours is what
     // grew the log to 715KB, and none of those rows describe anything. Events
     // are always logged at full fidelity regardless of state.
-    bool active = sm.isArmed() || sm.isDropping();
+    // Armed but known to be on the ground (OSDK height, no takeoff yet, or
+    // landed) counts as idle: the 2026-10-31 board sat armed on the ground
+    // for 45 min after the last flight and filled the log at 1 Hz.
+    bool active = sm.isDropping() ||
+                  (sm.isArmed() && !(engine && engine->onGround()));
     uint32_t tlm_interval = active ? TELEMETRY_INTERVAL_MS : TELEMETRY_IDLE_MS;
     if (millis() - last_tlm_ms >= tlm_interval) {
         last_tlm_ms = millis();

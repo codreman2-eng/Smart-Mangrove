@@ -105,10 +105,27 @@ public:
         // One bit per condition, for the dashboard checklist
         bool ok_time = false, ok_height = false, ok_home = false,
              ok_speed = false, ok_agree = false, ok_rearm = false,
-             ok_vert = false;
+             ok_vert = false, ok_mission = false;
     };
     const HoverInfo& hover() const { return _hover; }
     static const char* hoverName(Hover h);
+
+    // Whether the A3 currently reports a GS Pro waypoint mission running
+    // (fresh 0x02/0x03 push with mission_type 1). Fed by loop() before each
+    // update(); read only when hover.need_mission is set. The engine keeps
+    // no OSDK dependency, so host tests can drive it directly.
+    void setDjiMission(bool running) { _dji_mission = running; }
+
+    // True when OSDK height is arriving and says the aircraft has not taken
+    // off (or has landed). False with no height at all, so a GNSS-only
+    // flight never reads as "on the ground". Used to slow the armed
+    // telemetry rate: 45 min armed on the ground after the last 2026-10-31
+    // flight is what filled the log.
+    bool onGround() const { return _height_seen && _takeoff_ms == 0; }
+
+    // Log label for a drop result ("OK", "TIMEOUT", ...). Shared with the
+    // manual DROP A/B path in the .ino.
+    static const char* resultName(DropResult r);
 
     DropLogicEngine(ConfigManager&   cfg,
                     IPositionSource& pos,
@@ -224,6 +241,8 @@ private:
     uint32_t  _ref_ms         = 0;
     float     _pos_speed      = 0.0f;
     uint32_t  _pos_speed_ms   = 0;     // when _pos_speed was computed; 0 = never
+    bool      _dji_mission    = false; // see setDjiMission()
+    bool      _height_seen    = false; // last position carried OSDK height
 
     // Takeoff / landing / home / position-derived speed. Runs every idle
     // tick in either mode so the numbers are there the moment hover mode is

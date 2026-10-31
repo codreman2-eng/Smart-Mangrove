@@ -115,6 +115,16 @@ void DropLogicEngine::update() {
     // aircraft closing on the waypoint before the operator arms. Nothing
     // below the isArmed() check further down can move a servo.
     const bool hover_mode = _cfg.config().hover.enabled;
+
+    // Takeoff/landing tracking runs BEFORE the out-of-doors return. It used to
+    // run after it, so an empty rack froze the flight clock: on 2026-10-31
+    // "landed" was only logged 10 s after RESET DOOR COUNT, and the next
+    // takeoff came 2 s later. A quicker one would have inherited the last
+    // flight's clock, home and last-drop point.
+    _pos.update();
+    Position cur = _pos.read();
+    _trackFlight(cur);
+
     if (missionComplete()) {
         _approach = ApproachInfo(); _approach.state = Approach::DONE;
         _dwell_start_ms = 0;
@@ -123,10 +133,6 @@ void DropLogicEngine::update() {
         else            _hover = HoverInfo();
         return;
     }
-
-    _pos.update();
-    Position cur = _pos.read();
-    _trackFlight(cur);
 
     // Hover mode replaces the waypoint gate entirely; nothing below runs.
     if (hover_mode) {
@@ -311,6 +317,7 @@ const char* DropLogicEngine::hoverName(Hover h) {
 void DropLogicEngine::_trackFlight(const Position& cur) {
     const HoverConfig& hc = _cfg.config().hover;
     const uint32_t now = millis();
+    _height_seen = cur.valid && cur.height_valid;   // for onGround()
 
     // Position-derived speed over a >= 1 s window. Any invalid sample starts
     // the window over, so a gap in the fix can never stretch dt and read as
@@ -395,8 +402,10 @@ void DropLogicEngine::_updateHover(const Position& cur) {
     h.ok_vert   = h.speed_valid && h.vspeed_mps <= hc.max_vspeed_mps;
     h.ok_agree  = pos_fresh && _pos_speed <= hc.max_speed_mps + POS_SPEED_TOL_MPS;
     h.ok_rearm  = !_have_last_drop || h.rearm_m >= hc.rearm_dist_m;
+    h.ok_mission = !hc.need_mission || _dji_mission;
     const bool all = h.ok_time && h.ok_height && h.ok_home &&
-                     h.ok_speed && h.ok_vert && h.ok_agree && h.ok_rearm;
+                     h.ok_speed && h.ok_vert && h.ok_agree && h.ok_rearm &&
+                     h.ok_mission;
 
     // Like the waypoint dwell: the hold runs only ARMED and restarts on any
     // break, so arming mid-hover waits the full hold_s.
@@ -424,7 +433,7 @@ void DropLogicEngine::_updateHover(const Position& cur) {
     if (now - last_trace_ms >= 1000) {
         last_trace_ms = now;
         Serial.printf("[DLE] HOVER %s t=%.0fs h=%.1f home=%.0f v=%s vz=%s pv=%s rearm=%s "
-                      "hold=%.1f [%c%c%c%c%c%c%c]\n",
+                      "hold=%.1f [%c%c%c%c%c%c%c%c]\n",
                       hoverName(h.state), h.flight_s, h.height_m, h.home_dist_m,
                       h.speed_valid ? String(h.speed_mps, 1).c_str() : "none",
                       h.speed_valid ? String(h.vspeed_mps, 1).c_str() : "none",
@@ -434,7 +443,8 @@ void DropLogicEngine::_updateHover(const Position& cur) {
                       h.ok_time ? 'T' : 't', h.ok_height ? 'H' : 'h',
                       h.ok_home ? 'D' : 'd', h.ok_speed ? 'V' : 'v',
                       h.ok_vert ? 'Z' : 'z',
-                      h.ok_agree ? 'P' : 'p', h.ok_rearm ? 'R' : 'r');
+                      h.ok_agree ? 'P' : 'p', h.ok_rearm ? 'R' : 'r',
+                      h.ok_mission ? 'M' : 'm');
     }
 
     if (!all || held_ms < (uint32_t)(hc.hold_s * 1000.0f + 0.5f)) return;
@@ -534,13 +544,16 @@ void DropLogicEngine::_recordDrop(uint8_t drop_id, uint8_t module_idx,
     // Was a bare OK/TIMEOUT ternary, which would have relabelled an ABORTED
     // drop as TIMEOUT — a different failure with a different cause, and the
     // log is the only record anyone gets after a flight.
-    const char* rs = "TIMEOUT";
-    if      (result == DropResult::OK)           rs = "OK";
-    else if (result == DropResult::ABORTED)      rs = "ABORTED";
-    else if (result == DropResult::FAULT)        rs = "FAULT";
-    else if (result == DropResult::ALREADY_DONE) rs = "EMPTY";
-    strncpy(evt.result_str, rs, sizeof(evt.result_str));
+    strncpy(evt.result_str, resultName(result), sizeof(evt.result_str));
     _log.logDrop(evt);
+}
+
+const char* DropLogicEngine::resultName(DropResult r) {
+    if (r == DropResult::OK)           return "OK";
+    if (r == DropResult::ABORTED)      return "ABORTED";
+    if (r == DropResult::FAULT)        return "FAULT";
+    if (r == DropResult::ALREADY_DONE) return "EMPTY";
+    return "TIMEOUT";
 }
 
 bool DropLogicEngine::missionComplete() const {

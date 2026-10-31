@@ -120,6 +120,7 @@ bool ConfigManager::_parse(const char* path) {
         h.rearm_dist_m     = hv["rearm_dist_m"]     | def.rearm_dist_m;
         h.takeoff_height_m = hv["takeoff_height_m"] | def.takeoff_height_m;
         h.use_b            = hv["use_b"]            | def.use_b;
+        h.need_mission     = hv["require_dji_mission"] | def.need_mission;
         setHover(h);
     }
 
@@ -191,6 +192,7 @@ bool ConfigManager::save() {
     hv["rearm_dist_m"]     = _cfg.hover.rearm_dist_m;
     hv["takeoff_height_m"] = _cfg.hover.takeoff_height_m;
     hv["use_b"]            = _cfg.hover.use_b;
+    hv["require_dji_mission"] = _cfg.hover.need_mission;
 
     JsonArray drops = doc["drops"].to<JsonArray>();
     for (uint8_t i = 0; i < _cfg.drop_count; i++) {
@@ -271,6 +273,7 @@ void ConfigManager::setHover(const HoverConfig& h) {
     c.rearm_dist_m     = clampf(h.rearm_dist_m,     0.0f, HoverConfig::REARM_MAX);
     c.takeoff_height_m = clampf(h.takeoff_height_m, HoverConfig::TAKEOFF_MIN, HoverConfig::TAKEOFF_MAX);
     c.use_b            = h.use_b;
+    c.need_mission     = h.need_mission;
     if (c.enabled) _cfg.loaded = true;
 }
 
@@ -337,11 +340,12 @@ void ConfigManager::printSummary() const {
                   _cfg.release.default_radius_m);
     const HoverConfig& h = _cfg.hover;
     Serial.printf("  Hover mode  : %s  after %.2f min  h %.1f-%.1f m  home>=%.0f m  "
-                  "speed<=%.1f vert<=%.1f m/s for %.1f s  rearm %.0f m  takeoff %.1f m  %s\n",
+                  "speed<=%.1f vert<=%.1f m/s for %.1f s  rearm %.0f m  takeoff %.1f m  %s%s\n",
                   h.enabled ? "ENABLED (waypoints ignored)" : "off",
                   h.min_flight_min, h.min_height_m, h.max_height_m, h.min_home_dist_m,
                   h.max_speed_mps, h.max_vspeed_mps, h.hold_s, h.rearm_dist_m,
-                  h.takeoff_height_m, h.use_b ? "A+B" : "A only");
+                  h.takeoff_height_m, h.use_b ? "A+B" : "A only",
+                  h.need_mission ? "  DJI mission only" : "");
     Serial.printf("  Drop points : %d\n", _cfg.drop_count);
     for (uint8_t i = 0; i < _cfg.drop_count; i++) {
         const DropPoint& dp = _cfg.drops[i];

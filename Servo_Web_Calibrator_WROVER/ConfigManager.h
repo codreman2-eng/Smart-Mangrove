@@ -126,6 +126,12 @@ struct HoverConfig {
     // Module B is uncalibrated as of 2026-10-29; a hover drop fires A only
     // unless this is set.
     bool  use_b            = false;
+    // Fire only while the A3 reports a GS Pro waypoint mission running
+    // (OSDK 0x02/0x03 push, mission_type 1). First seen on the 2026-10-31
+    // field test: without it, 3 of 8 hover drops fired at stops after the
+    // mission had ended. Off by default so old mission.json files keep
+    // their behaviour.
+    bool  need_mission     = false;
 
     static constexpr float FLIGHT_MAX  = 60.0f;   // minutes
     static constexpr float HEIGHT_MAX  = 120.0f;
