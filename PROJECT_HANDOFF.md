@@ -1764,6 +1764,235 @@ condition on top of the gate, not a replacement.
 
 The host harness lives only in the session scratchpad; it is not in the repo.
 
+PHASE 4c was committed as `0e448e9` and first flashed on 2026-10-29, as a
+flight build from `b989517`. The 4d work below now runs on top of it.
+
+---
+
+## PHASE 4d (2026-10-29/30): HOVER RELEASE MODE AND THE FIRST FIELD TEST
+
+Commits `b6c366c`, `2fc935b`, `e960ec1`, `351f069`, all pushed. **The board
+runs `351f069` as the flight build.**
+
+### Why a second release mode
+
+The owner wanted the drone to drop "at <= 2 m/s after some minutes", with no
+coordinates. A GS Pro mission flies out of Wi-Fi range, so a manual drop from
+the dashboard is impossible, and the waypoint gate needs coordinates typed in
+beforehand. Hover mode drops on **what the aircraft is doing**: GS Pro's
+"Hover N s" waypoint action stops the M600, and the launcher fires while it
+is stopped.
+
+### What was built
+
+- `HoverConfig` (the `"hover"` block in `mission.json`, `ConfigManager.h`) and
+  `DropLogicEngine::_trackFlight` / `_updateHover`. **When hover is enabled,
+  it replaces the waypoint gate completely.** Saved waypoints are ignored.
+- It fires **module A only** (`use_b` off) once all of these have held together
+  for `hold_s`:
+  armed AND airborne >= `min_flight_min` (takeoff = height >= `takeoff_height_m`)
+  AND `min_height_m` <= height <= `max_height_m` AND >= `min_home_dist_m` from
+  the takeoff point AND OSDK speed <= `max_speed_mps` AND position-derived speed
+  <= `max_speed_mps` + 1 AND |vz| <= `max_vspeed_mps` AND >= `rearm_dist_m` from
+  the last hover drop.
+  Landed = below takeoff height for 10 s, which resets the flight clock and home.
+- `2fc935b` added the **|vz| and max-height conditions.** Without them a GS Pro
+  RTH climb, a signal-loss RTH or a landing away from home could hold still
+  long enough to fire. The host test proved this: with both conditions
+  disabled, the RTH case fires. `abs()` is used, so the unverified OSDK vz
+  sign (`OSDK_VZ_IS_UP`) does not matter here.
+- `e960ec1`: the hover card now tells a dead link from a missing GPS fix:
+  NO DJI LINK / LINK OK - MISSING DATA / LINK OK - WAITING GPS (`osdkLink`,
+  `osdkHealth` in `/status`). The owner had read a plain NO DATA as a dead link.
+- `351f069`: **RESET DOOR COUNT** (Control tab, two taps), `/resetdoors?confirm=1`,
+  serial `resetdoors`. After the fifth drop `missionComplete()` stays true for
+  good, so every ARM went straight back to IDLE until a reboot. The reset is
+  refused while armed or dropping. It deliberately keeps the takeoff point
+  and the flight clock, so a reset in the air cannot void the home-distance guard.
+- Dashboard: HOVER RELEASE card with a live per-condition checklist (Control
+  tab) and a settings card (Waypoints tab, `/hover`). Serial `hover` prints in
+  every build but only *sets* in SIM. The serial line cap was raised from 64
+  to 128 characters.
+- **`SIM_MODE` is committed as 0** on purpose (since `b6c366c`). The owner asked
+  for the flight build to stay on during the real-test period. Do not revert
+  it or flash a SIM build until they say that period is over.
+
+### Values on the board (set over Wi-Fi 2026-10-30, after the feasibility study)
+
+| min flight | height | home dist | speed | vz | hold | rearm | takeoff h | modules |
+|---|---|---|---|---|---|---|---|---|
+| 0.25 min | 2-7 m | 25 m | 1.2 m/s | 1.0 m/s | 5 s | 8 m | 1.5 m | A only |
+
+These supersede the 5-15 m / 30 m / 1.0 m/s set (built for an 8 m mission) and
+the 0.8 m/s field set from earlier the same day. **Why 1.2 m/s:** the gust
+simulation (`tools/host_sim/test_wind*.cpp`) fired only 10-13 of 25 at 0.8 m/s
+with ±0.9 m/s velocity noise, against 25/25 at 1.0. Under ±1.2 m/s noise it
+fired 24/25 at 1.2 against 9/25 at 1.0. The hold time and the vz limit still
+keep RTH and turn stops from firing.
+Read the values back from the Waypoints tab before flying. They are runtime
+settings in `mission.json`, not code.
+
+Other board state: module A was recalibrated to **540 ms travel** (bench: 540
+target / 540 actual / +0 ms). **Module B's open value became 1700 on that same
+save**, which nobody asked for. It doesn't matter while `use_b` is off; check it
+before turning B on. RC trigger: disabled and saved (2026-10-29, survives a
+reboot). No limit switches, no F-channel. The flight log was cleared (owner
+agreed). **The launcher's COM port has been COM3, COM7 and COM9 this phase.**
+
+### The field test plan (university soccer field, 2026-10-30)
+
+- OSM: the marked pitch is ~101.6 x 65.5 m, axis 178.6 deg. The flight line is
+  lon **-79.5315227**, shifted 10 m west because the original line clipped the
+  south goal's west post.
+- **Option 1:** takeoff 9.0267831, -79.5315227 (outside the pitch, south).
+  WPs due north at **40 / 58 / 76 / 94 / 112 m**.
+  **Option 2** (if there are nets or fences behind the goals): takeoff 9.0270363
+  inside the pitch, WPs at 60/73/86/99/112 m from the option-1 takeoff
+  (32/45/58/71/84 m from its own). Choose on site.
+- GS Pro: 4 m altitude (the board accepts 3-5 m), 3 m/s, Straight Route,
+  Hover 20-25 s per WP, finish action RTH at 20 m.
+- **Power lines (OSM):** a 115 kV line passes 87 m from the flight segment at its
+  closest point and crosses the extended line ~205 m north of takeoff, 92 m past
+  WP 5. RTH flies south, away from it. Other 115 kV lines run >= 120 m east.
+  Not a hazard for the plan as drawn. It is if anyone extends the line north.
+- Albrook (airport) is ~6.5 km away.
+
+### Verification actually done
+
+| Check | Result |
+|---|---|
+| Host engine sims, `tools/host_sim/` (real engine + zig, see document map) | `test_hover` 12 scenarios, `test_field` F1-F8, `test_final` both options at ±0.3/0.6/0.9 m/s gust: **all pass**. Worst miss 2.6 m at ±0.9; nothing during RTH; B never fires |
+| Dashboard JS harness | 27/27 (hover card, link cases, reset warning, two-tap call) |
+| SIM board run (`b6c366c`) | 3 hover drops at the right moments; too close / too fast / too low / speeds disagreeing all held; landing reset; waypoint-mode regression unchanged |
+| Bench, flight build, servo powered (owner OK'd motion) | armed over serial, real `/dropa` -> DROPPING 612 ms, doors A 1 / B 0, no reboot, link held |
+| Live A3 broadcast on the bench | ~50 frames/s, passFlag 0x0A79 (POSITION + VELOCITY), **health 0 indoors** |
+| DJI Assistant 2 SDK page | 921600, Velocity + Position at 50 Hz, HEIGHT = altitude to home point. SDK failsafe RTH is irrelevant (the ESP32 never takes control) |
+| **Real OSDK height/velocity with a GPS fix** | **never seen.** Without them the card stays at WAITING GPS / NO DATA and hover never fires |
+| DJI simulator rehearsal | **not done** (the props could not come off) |
+
+Known: the loop still has a ~110-170 ms telemetry flash stall about once a
+second while armed. The 5 s hold makes it harmless for hover release.
+
+Bench gotchas from this phase: `pyserial` scripts run with `run_in_background`
+on the launcher's port hung silently twice, so run them in the foreground with
+`timeout`. `python -I` ignores `PYTHONIOENCODING`, so a serial script that
+prints the firmware's `->` arrows crashes on cp1252 under `-I`. The flight
+build has no serial command for RC/release config, only HTTP. The method that
+works is one script that runs `netsh wlan connect name=SmartLauncher`, retries
+the request, and reconnects the lab Wi-Fi in `finally`.
+
+---
+
+## PHASE 4e (2026-10-31): FIRST REAL HOVER DROPS, AND THE FIXES THEY SHOWED
+
+The first field test with real OSDK data. The log, the board's config at the
+end of the day and a per-flight timeline are in
+`flight_logs/2026-10-31_field_test/` (`timeline.py` rebuilds `timeline.txt`
+from the log).
+
+### What the owner changed on the field (dashboard, logged as `hover_cfg`)
+
+| min flight | height | home dist | speed | vz | hold | rearm | takeoff h | modules |
+|---|---|---|---|---|---|---|---|---|
+| 0.25 min | **5-11 m** | 25 m | **0.5 m/s** | 1.0 m/s | **2 s** | 8 m | 1.5 m | A only |
+
+Flown at **10 m** above takeoff, cruise about **1.5 m/s**. The GS Pro hover was
+**5.1-6.4 s in flight 3** and only about **1.4 s in flight 2** (measured from the
+A3's own "reached" / "action done" pushes, see below). 0.5 m/s was the right
+call: flight 2's cruise dipped to 1.2 m/s, which the old 1.2 limit would have
+let through.
+
+### Results (3 mission flights plus a 60 s hop)
+
+- **8 hover drops, all with the aircraft stopped** (OSDK 0.06-0.25 m/s, |vz| <=
+  0.03), 1.0-2.4 s after arrival, within 0.3 m of the hover point.
+- **5 of the 6 GS Pro waypoints that were >= 25 m from takeoff got a drop.** The
+  miss was flight 1's WP0, where it braked from 10 m/s and stopped for less
+  than 2 s.
+- The first WP of flights 2 and 3 (18 m and 23 m out) was held by the 25 m
+  guard, as designed.
+- Flight 2's two drops fired **0.2 s before the drone left**: a ~1.4 s GS Pro
+  hover is right at the edge with hold 2 s. Keep the GS Pro hover >= 5 s.
+- **3 of the 8 hover drops were at stops after the mission had ended** (pilot or
+  finish-action stops), not at waypoints.
+- **5 door openings had no `drop` row.** They were dashboard DROP A presses: no
+  other path skips the log. Two were on the ground. Three were in flight at
+  1.5-1.7 m/s, which lands a seed about 2-2.5 m ahead from 10 m.
+- **The A3 DOES send the OSDK 0x02/0x03 and 0x02/0x04 mission pushes during a
+  GS Pro mission.** This settles the open question in
+  `reports/Estado de waypoints en el M600.md`. What was observed:
+  - **Status** (0x02/0x03): `b2` (mission_type) is 1 while the mission runs and
+    0 when it ends, after which the pushes stop. `wp` is the target index.
+    `st` is 5 at arrival, 6 when the action is done, 1 en route.
+  - **Event** (0x02/0x04): `st` 4 = reached, 6 = action done, with the
+    waypoint index.
+  - About 50 status frames/s while a mission runs. One "reached" event was
+    probably lost to CRC errors.
+- OSDK CRC errors: 3548 of 118342 frames (3.0%), 1124 resyncs. Check the
+  wiring.
+- The log FILLED (1.1 MB) at uptime 5556 s. It still held the 10-30 bench
+  session, and the board then sat armed on the ground for about 45 min at 1 Hz.
+
+### The owner's account of the day (2026-10-31, after the analysis)
+
+- The route was flown at, or close to, the planned coordinates, as a roughly
+  square path.
+- **The unlogged door openings were deliberate drop tests** from the dashboard,
+  not stray presses.
+- **GS Pro's hover time is set per waypoint, one at a time.** The pilot did not
+  know this, so only some waypoints got the 5 s hover. That explains the ~1.4 s
+  stops in flight 2 against 5-6 s in flight 3. Set every waypoint's hover
+  before the next field test.
+- The pilot suspected interference from nearby 5G antennas. The OSDK link is a
+  short wire, so 5G is an unlikely cause of its 3% CRC errors. GPS held within
+  0.3 m in every hover. Measure the CRC rate on the bench before blaming the RF.
+- The conclusion: the logic works. **The next goal is faster operation:**
+  constant seeding, releasing while moving at about 2 m/s rather than at a
+  stop. The owner also wants a **tolerance band** (target ± tolerance) instead
+  of a single maximum.
+- **The next weeks are bench-only: ESP32 and code, no drone.** The owner will
+  say when field work resumes.
+
+### Fixes (built, host-tested, flashed 2026-10-31 on COM9, NOT committed)
+
+1. **Landing detection froze once the rack was empty.** `update()` returned on
+   `missionComplete()` before `_trackFlight()`. So "landed" was only logged
+   10 s after RESET DOOR COUNT. In flight 3 the next takeoff came 2 s after
+   that. A quicker takeoff would have kept the old flight clock, home and
+   last-drop point. Tracking now runs before the out-of-doors return.
+   `test_fixes [2]` fails 4 checks on the old order and passes on the new one.
+2. **Manual DROP A/B is logged.** It writes a `manual_drop` row (module, door,
+   OSDK height and speed at the press, result) and a `drop` row with id 0.
+   Both are written once the door is done, so no flash write happens inside
+   the drive window.
+3. **"Only during the DJI mission"** (`hover.require_dji_mission`, `/hover?mis=`,
+   serial `hover mis=`, a checkbox on the Waypoints tab). It adds a hover
+   condition: a 0x02/0x03 push with mission_type 1, no older than 3 s
+   (`DJI_MISSION_STALE_MS`). The mission card shows it as an extra checklist
+   row (`hvMisOn`, `hvOk` bit 128). It is **off by default** and on the board.
+   It fails safe: a missing or stale push can only hold a drop back.
+4. **Armed but known to be on the ground logs at the idle rate** (10 s, not
+   1 s). Known = OSDK height is arriving and there has been no takeoff, or the
+   aircraft has landed (`DropLogicEngine::onGround()`). Without OSDK height the
+   armed rate stays 1 Hz.
+
+Verified: `run_host_sim.py`, all pass (new `test_fixes`, 5 scenarios on the
+10-31 values). The dashboard JS harness (scratchpad only) passes 12/12 against
+the board's real `/status`. Flight build compiled (86% flash). Flashed with the
+hash verified. After boot, `hover` shows the saved values with `mis:false`.
+The log was cleared twice: the old firmware had refilled it to 179 KB while
+armed on the bench. It was 32 bytes at the end.
+
+**After the reboot the door counters read 0/0, but the rack physically has 4 of
+module A's 5 doors open.** Reload it before the next flight.
+
+### Recommendations for the next test
+
+- GS Pro hover >= 5 s. First drop waypoint >= 30 m from takeoff.
+- Raise `max_height_m` to 13-15: 11 leaves 1 m above a 10 m mission. RTH at
+  20 m is still blocked.
+- Consider ticking "Only during the DJI mission".
+
 ---
 
 ## FLIGHT CONTROLLER (Cube Orange \u2014 separate from launcher)
@@ -1931,12 +2160,15 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
 
 ## CURRENT EXACT STATE / WHERE WE ARE
 
-*(Last reviewed 2026-10-15, after PHASE 4c.)*
+*(Last reviewed 2026-10-31, after PHASE 4e. Where a bullet below disagrees
+with PHASE 4e or 4d, the phase section is right.)*
 
-- **The board is two firmware revisions behind the repo.** It runs `22d753a`
-  (2026-09-30 flight build, `SIM_MODE 0`). Neither `932c913` (OSDK mission
-  logging) nor PHASE 4c (configurable release gate) has ever been flashed.
-  After flashing: plan steps 21–26, then untick *RC trigger enabled* and save.
+- **The board runs the PHASE 4e fixes on top of `351f069`** (flight build,
+  flashed 2026-10-31 on COM9, **not yet committed**), with HOVER RELEASE enabled
+  and saved at the 10-31 field values (see PHASE 4e). Waypoint drops are off
+  while hover is on. RC trigger disabled and saved.
+- PHASE 4c's plan steps 21-26 were never run as a block. Its release gate is
+  bypassed while hover mode is on.
 - Release settings (max speed 2.0, dwell 0, default radius 5) live in
   `mission.json` and on the Waypoints tab; nothing about them is compile-time.
 
@@ -1946,7 +2178,8 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
   COM10 on 2026-08-25. Check `Tools -> Port` every time rather than trusting
   a number written down.
 - servo_minimal.ino boot instability is resolved — base is solid.
-- Module A: **open=1470 stop=1670 travel=580ms**, confirmed from the board's
+- Module A: **travel=540ms since the 2026-10-30 recalibration** (PHASE 4d).
+  The history below is 580ms. It was **open=1470 stop=1670 travel=580ms**, confirmed from the board's
   own boot banner on 2026-08-25. The **1450** this document used to carry was
   stale history — settled. Module B reads open=1300 stop=1500 travel=350ms,
   which are still defaults and still unmeasured. The stop values are worth
@@ -1960,24 +2193,25 @@ It needs pin updates for WROVER-E and to REMOVE GPIO 2 usage before running on c
 - **SIM mode has RUN on hardware; the RC pilot trigger has not.** The GPS
   auto-fire path was observed end to end (Phase 3d): waypoint detected at 0.0m,
   A fired 580ms, B 350ms, both logged, auto-disarm. No real RC signal has ever
-  been read. `SIM_MODE` is **1** in `Pins.h` as committed, so a fresh clone is
-  the dry-run build. **The bench board is NOT** — it was flashed with the flight
-  build (`SIM_MODE 0`) on 2026-09-30. Flip to 0 only for a supervised flight
-  build (and read the `#warning` it emits), and set it back before committing.
-- **No drop has been driven on real servos by this firmware.** Everything
-  proven so far was proven on LEDs with the servo UBEC unplugged; the flight
-  flash of 2026-09-30 only confirmed servo PWM is attached at boot.
+  been read. **Since `b6c366c` (2026-10-29), `SIM_MODE` is committed as 0**, so
+  a fresh clone is the FLIGHT build. The owner asked for that during the
+  real-test period. Do not flip it back to 1 until they say the period is over.
+- **Real servo drops have now been driven by this firmware**, on the bench
+  (PHASE 4d: `/dropa` 612 ms; module A at 540 ms target / 540 actual / +0 ms).
+  Never yet in the air.
 - **The plan's results table is now over half filled.** Steps 1, 3, 4, 6, 7a,
   9, 10, 11 and 12 all have observed results. Still open: 2, 5, 7b, 8 (browser
   and limit-switch), and the entire RC block (B1-B4, 13-20).
 - **The saved mission is 10 waypoints at r=5.0m**, built around the real
   coordinate 9.0222514, -79.5322405 with ~22m spacing so the circles stay
   disjoint. It is the defect (c) fixture; it is NOT a real plot — replace it
-  from the dashboard before any real mission.
-- **The flight log is FULL again** (1.1MB cap, as of 2026-09-30), so drops are
-  not being logged until `clearlog`. Not cleared yet: it holds the bench
-  history, and the owner has not agreed to delete it.
-- Git: work is on branch **`sim-mode-and-rc-trigger`**, pushed. Merge to main
+  from the dashboard before any real mission. (Hover mode ignores it.)
+- **The flight log was cleared on 2026-10-29 and again after the 2026-10-30
+  bench drop**, both with the owner's OK. It is logging again.
+- Git: work is on branch **`sim-mode-and-rc-trigger`**, pushed. `main` stops at
+  2026-07-10, 39+ commits behind, so a default clone gets no START_HERE.
+  `reports/` and `research_notes/` are still untracked, although code
+  comments cite the report. Merge to main
   when the bench run has validated the rest — the RC path in particular has
   still never seen a real signal.
 
@@ -2018,6 +2252,35 @@ picks up the same esp32 core 3.3.8 the IDE uses. Build:
 ---
 
 ## IMMEDIATE NEXT GOAL
+
+### Now (2026-10-30): the first hover-release field flight
+
+Everything in PHASE 4d is ready apart from the items below. These are what is
+left to account for:
+
+1. **On the ground at the field, before takeoff, the hover card must say the
+   link is OK, with a GPS fix and live height and velocity.** It has only ever
+   seen health 0 indoors. NO DJI LINK or WAITING GPS means do not fly: hover
+   will never fire.
+2. **Read the hover values back** on the Waypoints tab (table in PHASE 4d).
+3. **ARM before takeoff.** The board goes out of Wi-Fi range once the drone
+   flies out.
+4. **Pick option 1 or 2 on site**, and make the GS Pro waypoints match it.
+5. **RESET DOOR COUNT between sorties.** Five WPs empty module A.
+6. The last door of module A is timed (540 ms), with no limit switch. It is
+   dead-reckoned, but it will not overdrive.
+7. After the flight: pull the log (`takeoff`, `hover_release`, `landed` rows)
+   and compare each drop with its waypoint. That is the first real-data check
+   of the whole chain. The DJI simulator rehearsal was never done, so the
+   flight is also the rehearsal.
+
+After the field test, the list below still stands. T_EXIT_S and the predictor
+matter little for hover release (the aircraft is nearly stopped), but they
+matter for the waypoint gate.
+
+### Before PHASE 4d
+
+Step 0's SIM flash waits until the owner ends the real-test period (PHASE 4d).
 
 *(Rewritten 2026-09-01. All four planted defects are now closed: (a), (b) and
 (e) confirmed-and-fixed on hardware, (c)'s symptoms proven unreachable in
@@ -2140,7 +2403,10 @@ servo-runaway safety incident.
 - Phase 4b Slow-down gate (2.0 m/s) + APPROACH card - flashed 2026-09-30
 - Phase 4c Release gate configurable from the dashboard (max speed, dwell,
            default radius), DJI MISSION card, wiring audit (F-channel out,
-           GPIO 26 unconnected, VELOCITY required). Host-tested, NOT flashed
+           GPIO 26 unconnected, VELOCITY required). Flashed 2026-10-29 with 4d
+- Phase 4d HOVER RELEASE mode (drop on a held hover, no coordinates), vz +
+           max-height guards, link diagnosis, door-count reset. Flight build
+           on the board, bench-verified; first field flight pending
 - Phase 4  MAVLink position (Cube Orange TELEM2) - pending
 - Phase 5  Python config tool (import QGC/UgCS missions -> mission.json) - pending
 - Phase 6  Testing (bench -> static drops -> low altitude -> full mission) - pending
@@ -2178,6 +2444,19 @@ servo-runaway safety incident.
   the doors run out. It is what closed defect (c), and it surfaced the
   limit-switch overdrive hazard as a side effect. Re-run it after any change to
   `DropLogicEngine`'s completion logic.
+- `flight_logs/2026-10-31_field_test/` — the first real field log (PHASE 4e),
+  the board's config at the end of that day, and `timeline.py`, which turns a
+  log into a per-flight, per-second timeline with the OSDK mission pushes inline.
+- `tools/host_sim/` — hover-release simulations with no ESP32. They compile
+  the REAL `DropLogicEngine`/`ActuatorModule`/`StateMachine` against Arduino
+  stubs with zig's clang, and pull `ConfigManager::setHover` out of the live
+  source at build time. `python tools/host_sim/run_host_sim.py` builds and runs
+  all of them; it needs `ziglang` on `PYTHONPATH`. The pass/fail tests are
+  `test_hover`, `test_field`, `test_final` and `test_fixes` (the PHASE 4e
+  fixes, on the 10-31 board values). `test_wind`/`test_wind2` print
+  the gust tables behind the 1.2 m/s choice. Each test pins the hover values of
+  its own day: `test_final` = the values on the board now. Re-run them after any
+  change to the engine's hover path.
 - `tools/bench_serial.py` — PC-side serial bench driver. `boot`, `listen`,
   `cmd`, `drop` and `estop` modes. The `estop` mode schedules the emergency
   stop INSIDE module A's drive window, which a human cannot reliably do by
